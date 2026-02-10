@@ -5,17 +5,21 @@ const cron = require('node-cron');
 const mongoose = require('mongoose');
 const Topic = require('../models/topic_model.js');
 
+const isTestEnv = process.env.NODE_ENV === 'test';
+
 // MongoDB connection
-mongoose.connect('mongodb+srv://ccarnus:totodu30@cast.xwxgb0o.mongodb.net/?retryWrites=true&w=majority')
-  .then(() => {
-    console.log('Successfully connected to MongoDB Atlas for topic indicator computor!');
-    // Once connected, schedule the job and/or run an immediate update.
-    scheduleWeeklyImpactUpdate();
-    computeImpactForAllTopics();
-  })
-  .catch((error) => {
-    console.error('Unable to connect to MongoDB Atlas', error);
-  });
+if (!isTestEnv) {
+  mongoose.connect('mongodb+srv://ccarnus:totodu30@cast.xwxgb0o.mongodb.net/?retryWrites=true&w=majority')
+    .then(() => {
+      console.log('Successfully connected to MongoDB Atlas for topic indicator computor!');
+      // Once connected, schedule the job and/or run an immediate update.
+      scheduleWeeklyImpactUpdate();
+      computeImpactForAllTopics();
+    })
+    .catch((error) => {
+      console.error('Unable to connect to MongoDB Atlas', error);
+    });
+}
 
 // Your SERP API key and base URL
 const SERP_API_KEY = 'V8H3EVfy67HV5XijhqPRwaFy';

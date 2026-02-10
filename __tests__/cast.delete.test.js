@@ -3,9 +3,9 @@ const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const User = require('../models/user_model.js');
-const Article = require('../models/article_model.js');
+const Cast = require('../models/cast_model.js');
 
-jest.setTimeout(300000);
+jest.setTimeout(30000);
 
 let mongoServer;
 let app;
@@ -43,7 +43,7 @@ afterAll(async () => {
   }
 });
 
-test('deleting an article removes all user references', async () => {
+test('deleting a cast removes all user references', async () => {
   const user = await User.create({
     email: 'test.user@example.com',
     password: 'hashed-password',
@@ -52,12 +52,13 @@ test('deleting an article removes all user references', async () => {
     profilePictureUrl: 'http://example.com/profile.png'
   });
 
-  const article = await Article.create({
-    title: 'Test Article',
+  const cast = await Cast.create({
+    title: 'Test Cast',
+    description: 'Test description',
     department: 'Physics',
     brightmindid: user._id.toString(),
-    description: 'Test description',
-    articleimageurl: 'http://example.com/no-image',
+    casturl: 'http://example.com/no-video',
+    castimageurl: 'http://example.com/no-image',
     university: 'Test University',
     category: 'Test Category',
     visibility: 'public',
@@ -66,27 +67,27 @@ test('deleting an article removes all user references', async () => {
   });
 
   user.evaluation_list.push({
-    contentid: article._id.toString(),
-    type: 'article',
+    contentid: cast._id.toString(),
+    type: 'cast',
     watched: true,
     answered: false
   });
-  user.bookmarkedcontent.push({ contentid: article._id.toString() });
-  user.articlePublications.push(article._id);
+  user.bookmarkedcontent.push({ contentid: cast._id.toString() });
+  user.castPublications.push(cast._id);
   await user.save();
 
   await request(app)
-    .delete(`/article/${article._id.toString()}`)
+    .delete(`/cast/${cast._id.toString()}`)
     .expect(200);
 
   const updatedUser = await User.findById(user._id).lean();
   expect(updatedUser).not.toBeNull();
 
-  const articleIdString = article._id.toString();
-  expect(updatedUser.evaluation_list.some(entry => entry.contentid === articleIdString)).toBe(false);
-  expect(updatedUser.bookmarkedcontent.some(entry => entry.contentid === articleIdString)).toBe(false);
-  expect(updatedUser.articlePublications.map(id => id.toString())).not.toContain(articleIdString);
+  const castIdString = cast._id.toString();
+  expect(updatedUser.evaluation_list.some(entry => entry.contentid === castIdString)).toBe(false);
+  expect(updatedUser.bookmarkedcontent.some(entry => entry.contentid === castIdString)).toBe(false);
+  expect(updatedUser.castPublications.map(id => id.toString())).not.toContain(castIdString);
 
-  const deletedArticle = await Article.findById(article._id);
-  expect(deletedArticle).toBeNull();
+  const deletedCast = await Cast.findById(cast._id);
+  expect(deletedCast).toBeNull();
 });

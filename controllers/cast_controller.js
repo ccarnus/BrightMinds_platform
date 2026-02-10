@@ -212,50 +212,42 @@ exports.updateOneCast = async (req, res, next) => {
     }
 };
 
-const removeCastFromUsers = async (castId) => {
+const removeCastReferences = async (castId) => {
     try {
-        // Find all users who have this cast in their evaluation_list
-        const users = await User.find({
-            'evaluation_list.contentid': castId
-        });
+        const castIdString = castId.toString();
+        const castIdMatches = [castId, castIdString];
 
-        // Update each user
-        for (let user of users) {
-            // Filter out the deleted cast from the evaluation_list
-            user.evaluation_list = user.evaluation_list.filter(
-                evaluation => evaluation.contentid !== castId
-            );
+        const updateResult = await User.updateMany(
+            {
+                $or: [
+                    { 'evaluation_list.contentid': { $in: castIdMatches } },
+                    { 'bookmarkedcontent.contentid': { $in: castIdMatches } },
+                    { castPublications: { $in: castIdMatches } }
+                ]
+            },
+            {
+                $pull: {
+                    evaluation_list: { contentid: { $in: castIdMatches } },
+                    bookmarkedcontent: { contentid: { $in: castIdMatches } },
+                    castPublications: { $in: castIdMatches }
+                }
+            }
+        );
 
-            // Save the updated user document
-            await user.save();
-        }
-
-        console.log(`Removed cast ${castId} from all users' evaluation_list.`);
+        console.log(`Removed cast ${castIdString} references from users.`, updateResult);
     } catch (error) {
-        console.error('Error removing cast from users:', error);
+        console.error('Error removing cast references from users:', error);
     }
 };
-
 exports.deleteOneCast = async (req, res, next) => {
     try {
         const cast = await Cast.findById(req.params.id);
         if (!cast) {
             return res.status(404).json({ error: 'Cast not found.' });
         }
-  
-        // 1) Remove cast references from users
-        await removeCastFromUsers(req.params.id);
 
-        // 2) Remove this cast from the user's castPublications
-        const user = await User.findById(cast.brightmindid);
-        if (user) {
-            user.castPublications = user.castPublications.filter(
-                (pubId) => pubId.toString() !== cast._id.toString()
-            );
-            await user.save();
-        }
+        // 1) Delete the associated video file if it exists
 
-        // 3) Delete the associated video file if it exists
         let videoDeleteError = false;
         if (cast.casturl) {
             const videoFilename = cast.casturl.split('/media/cast_videos/')[1];
@@ -274,7 +266,7 @@ exports.deleteOneCast = async (req, res, next) => {
             }
         }
 
-        // 4) Delete the associated image file if it exists
+        // 2) Delete the associated image file if it exists
         let imageDeleteError = false;
         if (cast.castimageurl) {
             const imageFilename = cast.castimageurl.split('/media/cast_images/')[1];
@@ -293,7 +285,7 @@ exports.deleteOneCast = async (req, res, next) => {
             }
         }
 
-        // 5) Delete the associated subtitle file if it exists
+        // 3) Delete the associated subtitle file if it exists
         let subtitleDeleteError = false;
         if (cast.subtitleurl) {
             // e.g. "https://api.brightmindsresearch.com/backend/media/cast_subtitles/CAST_ID.srt"
@@ -313,10 +305,13 @@ exports.deleteOneCast = async (req, res, next) => {
             }
         }
 
-        // 6) Delete the Cast document from DB
+        // 4) Delete the Cast document from DB
         await Cast.deleteOne({ _id: cast._id });
 
-        // 7) Remove topic association from DB
+        // 5) Remove cast references from users (evaluation_list, bookmarks, publications)
+        await removeCastReferences(cast._id);
+
+        // 6) Remove topic association from DB
         const topicResult = await removeExistingTopic({
             name: cast.topic,
             departmentName: cast.department,
@@ -518,3 +513,5 @@ exports.getSimplifiedCast = async (req, res, next) => {
     }
   };
   
+
+
