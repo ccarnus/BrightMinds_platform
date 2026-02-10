@@ -14,7 +14,9 @@ const topicRoutes = require('./routes/topic_route.js');
 const app = express();
 const path = require('path');
 
-mongoose.connect('mongodb+srv://ccarnus:totodu30@cast.xwxgb0o.mongodb.net/?retryWrites=true&w=majority')
+const mongoUri = process.env.MONGODB_URI || 'mongodb+srv://ccarnus:totodu30@cast.xwxgb0o.mongodb.net/?retryWrites=true&w=majority';
+
+mongoose.connect(mongoUri)
   .then(() => {
     console.log('Succesully Connected to MongoDB Atlas!');
   })
