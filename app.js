@@ -11,6 +11,7 @@ const userRoutes = require('./routes/user_route.js');
 const virtualLabRoutes = require('./routes/virtual_lab_route.js');
 const universityRoutes = require('./routes/university_route.js');
 const topicRoutes = require('./routes/topic_route.js');
+const { scheduleWeeklyImpactUpdate } = require('./backend/topic_indicator_computor.js');
 const app = express();
 const path = require('path');
 
@@ -19,6 +20,7 @@ const mongoUri = process.env.MONGODB_URI || 'mongodb+srv://ccarnus:totodu30@cast
 mongoose.connect(mongoUri)
   .then(() => {
     console.log('Succesully Connected to MongoDB Atlas!');
+    scheduleWeeklyImpactUpdate();
   })
   .catch((error) => {
     console.log('Unable to connect to MongoDB Atlas');
