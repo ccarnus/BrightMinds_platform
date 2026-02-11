@@ -179,25 +179,31 @@ exports.updateOneArticle = async (req, res, next) => {
 };
 
 
-const removeArticleFromUsers = async (articleId) => {
+const removeArticleReferences = async (articleId) => {
     try {
-        // Find all users who have this article in their evaluation_list
-        const users = await User.find({
-            'evaluation_list.contentid': articleId
-        });
+        const articleIdString = articleId.toString();
+        const articleIdMatches = [articleId, articleIdString];
 
-        // Update each user
-        for (let user of users) {
-            user.evaluation_list = user.evaluation_list.filter(
-                evaluation => evaluation.contentid !== articleId
-            );
+        const updateResult = await User.updateMany(
+            {
+                $or: [
+                    { 'evaluation_list.contentid': { $in: articleIdMatches } },
+                    { 'bookmarkedcontent.contentid': { $in: articleIdMatches } },
+                    { articlePublications: { $in: articleIdMatches } }
+                ]
+            },
+            {
+                $pull: {
+                    evaluation_list: { contentid: { $in: articleIdMatches } },
+                    bookmarkedcontent: { contentid: { $in: articleIdMatches } },
+                    articlePublications: { $in: articleIdMatches }
+                }
+            }
+        );
 
-            await user.save();
-        }
-
-        console.log(`Removed article ${articleId} from all users' evaluation_list.`);
+        console.log(`Removed article ${articleIdString} references from users.`, updateResult);
     } catch (error) {
-        console.error('Error removing article from users:', error);
+        console.error('Error removing article references from users:', error);
     }
 };
 
@@ -245,17 +251,10 @@ async function performArticleCleanup(article, imageDeleteError, req, res) {
     // 1) Delete the Article document
     await Article.deleteOne({ _id: article._id });
 
-    // 2) Remove the article from users' evaluation_list (and possibly bookmarks)
-    await removeArticleFromUsers(article._id);
+    // 2) Remove all user references (evaluation_list, bookmarks, publications)
+    await removeArticleReferences(article._id);
 
-    // 3) Remove article ID from the user's articlePublications
-    const user = await User.findById(article.brightmindid);
-    if (user) {
-        user.articlePublications = user.articlePublications.filter(pubId => !pubId.equals(article._id));
-        await user.save();
-    }
-
-    // 4) Remove or decrement the topic
+    // 3) Remove or decrement the topic
     const topicResult = await removeExistingTopic({
         name: article.topic,
         departmentName: article.department,

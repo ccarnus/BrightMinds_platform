@@ -1,9 +1,14 @@
-const openai = require('openai');
+const isTestEnv = process.env.NODE_ENV === 'test';
 
-// Set your OpenAI API key
-//test
-const apikey = process.env.OPENAI_API_KEY;
-const client = new openai({apikey});
+let client = null;
+if (!isTestEnv) {
+  const openai = require('openai');
+
+  // Set your OpenAI API key
+  //test
+  const apikey = process.env.OPENAI_API_KEY;
+  client = new openai({apikey});
+}
 
 function cleanAnswerChoice(choice) {
     return choice.replace(/^[a-zA-Z]\)\s*/, '');
@@ -17,7 +22,19 @@ for (let i = array.length - 1; i > 0; i--) {
 }
 
 const generateEvaluation = async (description) => {
+  if (isTestEnv) {
+    return {
+      question: 'Mock question?',
+      responses: ['A', 'B', 'C', 'D'],
+      correct: 'A'
+    };
+  }
+
   try {
+    if (!client) {
+      console.error('OpenAI client not configured. Set OPENAI_API_KEY.');
+      return null;
+    }
 
     const response = await client.chat.completions.create({
     model: 'gpt-4',
@@ -72,13 +89,5 @@ const generateEvaluation = async (description) => {
     return null;
   }
 };
-
-// Helper function to shuffle an array randomly
-function shuffleArray(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
-  }
-}
 
 module.exports = generateEvaluation;
