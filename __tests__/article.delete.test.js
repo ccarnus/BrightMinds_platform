@@ -22,9 +22,11 @@ const waitForMongooseConnection = () => {
 };
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  process.env.MONGODB_URI = mongoServer.getUri();
   process.env.NODE_ENV = 'test';
+  if (!process.env.MONGODB_URI) {
+    mongoServer = await MongoMemoryServer.create();
+    process.env.MONGODB_URI = mongoServer.getUri();
+  }
 
   app = require('../app');
   await waitForMongooseConnection();
