@@ -2,6 +2,7 @@
 //mongodb+srv://ccarnus:<password>@cast.xwxgb0o.mongodb.net/?retryWrites=true&w=majority
 //totodu30
 
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
@@ -15,7 +16,10 @@ const { scheduleWeeklyImpactUpdate } = require('./backend/topic_indicator_comput
 const app = express();
 const path = require('path');
 
-const mongoUri = process.env.MONGODB_URI || 'mongodb+srv://ccarnus:totodu30@cast.xwxgb0o.mongodb.net/?retryWrites=true&w=majority';
+const mongoUri = process.env.MONGODB_URI;
+if (!mongoUri) {
+  throw new Error('MONGODB_URI is not set');
+}
 
 mongoose.connect(mongoUri)
   .then(() => {
