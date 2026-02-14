@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const Cast = require('../models/cast_model.js');
 const Article = require('../models/article_model.js');
-const departments = require('../lists/departments.js');
+const { departmentNames } = require('../lists/departments.js');
 const { deleteFile } = require('./fileHelper.js');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
@@ -567,7 +567,7 @@ exports.updateOneUser = async (req, res, next) => {
 
         // Optional: Validate department if it's being updated
         if (req.body.user.department) {
-            if (!departments.includes(req.body.user.department)) {
+            if (!departmentNames.includes(req.body.user.department)) {
                 return res.status(400).json({ error: 'Invalid department.' });
             }
             user.department = req.body.user.department;
@@ -875,7 +875,7 @@ exports.updateUserPreferences = async (req, res, next) => {
     }
 
     // Verification for 'category' field
-    if (!departments.includes(category)) {
+    if (!departmentNames.includes(category)) {
         return res.status(400).json({ message: 'Invalid category. Must be one of the predefined departments.' });
     }
 

@@ -2,12 +2,12 @@ const Cast = require('../models/cast_model.js');
 const User = require('../models/user_model.js');
 const { getVideoDurationInSeconds } = require('../backend/videoUtils');
 const fs = require('fs').promises;
-const departments = require('../lists/departments.js');
+const { departmentNames } = require('../lists/departments.js');
 const castQueue = require('../queues/castQueue.js');
 const Topic = require('../models/topic_model.js');
 const { createTopicIfNotExist, removeExistingTopic  } = require('../controllers/topic_controller.js');
 
-const isValidDepartment = (department) => departments.includes(department);
+const isValidDepartment = (department) => departmentNames.includes(department);
 
 exports.createCast = async (req, res, next) => {
     try {
