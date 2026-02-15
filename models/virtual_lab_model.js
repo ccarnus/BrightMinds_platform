@@ -7,7 +7,7 @@ const virtualLabSchema = mongoose.Schema({
         userID: { type: String, required: true }
     }],
     members: [{
-        brightmindsID: { type: String, required: true }
+        userID: { type: String, required: true }
     }],
     institute: [{
         instituteID: { type: String, required: true },
@@ -24,7 +24,7 @@ const virtualLabSchema = mongoose.Schema({
             userID: { type: String, required: true }
         }],
         members: [{
-            brightmindsID: { type: String, required: true }
+            userID: { type: String, required: true }
         }],
         threads: [{
             content: { type: String, required: true }
