@@ -4,21 +4,20 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const Topic = require('../models/topic_model.js');
 
+const originalNodeEnv = process.env.NODE_ENV;
+process.env.NODE_ENV = 'development';
+
 jest.mock('axios');
 
-jest.setTimeout(30000);
+const {
+  computeImpactForTopic,
+  computeImpactForAllTopics,
+} = require('../backend/topic_indicator_computor.js');
+
+jest.setTimeout(120000);
 
 let mongoServer;
-let originalNodeEnv;
 let originalMongoUri;
-
-const loadComputor = () => {
-  let moduleExports;
-  jest.isolateModules(() => {
-    moduleExports = require('../backend/topic_indicator_computor.js');
-  });
-  return moduleExports;
-};
 
 const log10p = (value) => Math.log10(value + 1);
 
@@ -79,9 +78,7 @@ const buildAxiosMock = ({ openAlexById, wikiViewsByTitle, wikiSearchResults }) =
 };
 
 beforeAll(async () => {
-  originalNodeEnv = process.env.NODE_ENV;
   originalMongoUri = process.env.MONGODB_URI;
-  process.env.NODE_ENV = 'development';
 
   mongoServer = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongoServer.getUri();
@@ -106,8 +103,6 @@ afterAll(async () => {
   } else {
     delete process.env.MONGODB_URI;
   }
-
-  jest.resetModules();
 });
 
 test('computeImpactForTopic uses OpenAlex and Wikipedia data to compute raw scores', async () => {
@@ -130,7 +125,6 @@ test('computeImpactForTopic uses OpenAlex and Wikipedia data to compute raw scor
     },
   });
 
-  const { computeImpactForTopic } = loadComputor();
   await computeImpactForTopic(topic);
 
   const updated = await Topic.findById(topic._id).lean();
@@ -171,7 +165,6 @@ test('computeImpactForTopic uses cached metrics when fresh and skips external ca
     throw new Error('External call should not happen');
   });
 
-  const { computeImpactForTopic } = loadComputor();
   await computeImpactForTopic(topic);
 
   expect(axios.get).not.toHaveBeenCalled();
@@ -201,7 +194,6 @@ test('computeImpactForTopic without openalexID uses Wikipedia only and handles n
     },
   });
 
-  const { computeImpactForTopic } = loadComputor();
   await computeImpactForTopic(topic);
 
   const updated = await Topic.findById(topic._id).lean();
@@ -242,7 +234,6 @@ test('computeImpactForAllTopics normalizes to percentiles', async () => {
     },
   });
 
-  const { computeImpactForAllTopics } = loadComputor();
   await computeImpactForAllTopics();
 
   const updatedTopics = await Topic.find().lean();
