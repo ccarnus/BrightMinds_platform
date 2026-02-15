@@ -3,12 +3,12 @@ const generateEvaluation = require('../backend/generate_question');
 const generateArticleImage = require('../backend/generate_article_image');
 const fs = require('fs');
 const User = require('../models/user_model.js');
-const departments = require('../lists/departments.js');
+const { departmentNames } = require('../lists/departments.js');
 const Topic = require('../models/topic_model.js');
 const { createTopicIfNotExist, removeExistingTopic  } = require('../controllers/topic_controller.js');
 const computeDuration = require('../backend/computeDuration');
 
-const isValidDepartment = (department) => departments.includes(department);
+const isValidDepartment = (department) => departmentNames.includes(department);
 
 exports.createArticle = async (req, res, next) => {
     try {

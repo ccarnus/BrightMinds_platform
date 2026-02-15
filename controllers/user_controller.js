@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const Cast = require('../models/cast_model.js');
 const Article = require('../models/article_model.js');
-const departments = require('../lists/departments.js');
+const { departmentNames } = require('../lists/departments.js');
 const { deleteFile } = require('./fileHelper.js');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
@@ -567,7 +567,7 @@ exports.updateOneUser = async (req, res, next) => {
 
         // Optional: Validate department if it's being updated
         if (req.body.user.department) {
-            if (!departments.includes(req.body.user.department)) {
+            if (!departmentNames.includes(req.body.user.department)) {
                 return res.status(400).json({ error: 'Invalid department.' });
             }
             user.department = req.body.user.department;
@@ -606,7 +606,7 @@ exports.deleteOneUser = (req, res, next) => {
 
 exports.updateUserAddContentToList = async (req, res, next) => {
     const userId = req.params.id;
-    const contentId = req.body.contentId;
+    const contentId = String(req.body.contentId);
     const type = req.body.type;
 
     try {
@@ -636,36 +636,42 @@ exports.updateUserAddContentToList = async (req, res, next) => {
             answered: false
         };
 
-        // Use $addToSet to avoid duplicate evaluation items.
-        // For history, use an update that increments the count if an entry already exists.
-        // We use arrayFilters to update the correct history element.
-        const update = {
-            $addToSet: { evaluation_list: newEvaluation },
-            $inc: { "tracking.history.$[elem].count": 1 }
-        };
+        // If the content already exists, update its status (no duplicates).
+        const updateExistingResult = await User.updateOne(
+            { _id: userId, "evaluation_list.contentid": contentId },
+            {
+                $set: {
+                    "evaluation_list.$.watched": true,
+                    "evaluation_list.$.type": type
+                }
+            }
+        );
 
-        const options = {
-            new: true,
-            arrayFilters: [{ "elem.category": category }]
-        };
+        if (updateExistingResult.matchedCount > 0) {
+            return res.status(200).json({ message: 'Content already in evaluation list.' });
+        }
 
-        let user = await User.findOneAndUpdate({ _id: userId, "tracking.history.category": category }, update, options);
+        // Add only if the content is not already present (protects against duplicates).
+        const addEvaluationResult = await User.updateOne(
+            { _id: userId, "evaluation_list.contentid": { $ne: contentId } },
+            { $push: { evaluation_list: newEvaluation } }
+        );
 
-        // If no history entry exists for that category, add it.
-        if (!user) {
-            // First, add the evaluation item if not already there
-            await User.updateOne(
-                { _id: userId },
-                { $addToSet: { evaluation_list: newEvaluation } }
-            );
+        if (addEvaluationResult.matchedCount === 0) {
+            return res.status(200).json({ message: 'Content already in evaluation list.' });
+        }
 
-            // Then push a new history object
+        // Update tracking history only when a new evaluation is added.
+        const historyUpdateResult = await User.updateOne(
+            { _id: userId, "tracking.history.category": category },
+            { $inc: { "tracking.history.$.count": 1 } }
+        );
+
+        if (historyUpdateResult.matchedCount === 0) {
             await User.updateOne(
                 { _id: userId },
                 { $push: { "tracking.history": { category: category, count: 1 } } }
             );
-
-            user = await User.findById(userId);
         }
 
         return res.status(200).json({ message: 'Content added to evaluation list and history updated.' });
@@ -720,23 +726,23 @@ exports.getUserBookmarks = async (req, res, next) => {
 
 exports.addUserBookmark = async (req, res, next) => {
     const userId = req.params.id;
-    const castId = req.body.castId;
+    const castId = String(req.body.castId);
 
     try {
-        const user = await User.findById(userId);
-
-        if (!user) {
+        const userExists = await User.exists({ _id: userId });
+        if (!userExists) {
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        // Check if the castId is already in the user's bookmarks
-        if (user.bookmarkedcontent.some((bookmark) => bookmark.contentid === castId)) {
+        // Add only if the content is not already present (protects against duplicates).
+        const addBookmarkResult = await User.updateOne(
+            { _id: userId, "bookmarkedcontent.contentid": { $ne: castId } },
+            { $push: { bookmarkedcontent: { contentid: castId } } }
+        );
+
+        if (addBookmarkResult.matchedCount === 0) {
             return res.status(400).json({ message: 'Element is already bookmarked.' });
         }
-
-        // Add the castId to the user's bookmarks
-        user.bookmarkedcontent.push({ castId });
-        await user.save();
 
         res.status(201).json({ message: 'Element bookmarked.' });
     } catch (error) {
@@ -869,7 +875,7 @@ exports.updateUserPreferences = async (req, res, next) => {
     }
 
     // Verification for 'category' field
-    if (!departments.includes(category)) {
+    if (!departmentNames.includes(category)) {
         return res.status(400).json({ message: 'Invalid category. Must be one of the predefined departments.' });
     }
 

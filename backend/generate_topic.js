@@ -1,5 +1,5 @@
 const axios = require('axios');
-const departments_ids = require('../lists/departments_ids');
+const { departmentNames, departmentIdByName } = require('../lists/departments');
 
 const isTestEnv = process.env.NODE_ENV === 'test';
 
@@ -12,8 +12,7 @@ if (!isTestEnv) {
 }
  
 function getFieldId(departmentName) {
-  const mapping = departments_ids.find(d => d.display_name === departmentName);
-  return mapping ? mapping.id : null;
+  return departmentIdByName[departmentName] || null;
 }
  
 async function fetchAllOpenAlexTopics(fieldId) {
@@ -133,37 +132,8 @@ async function generateTopicForContent(content, contentType) {
 }
 
 async function determineDepartmentForContent(description) {
-  const departments = [
-    'Medicine',
-    'SocialSciences',
-    'Engineering',
-    'ArtsandHumanities',
-    'ComputerScience',
-    'BiochemistryGeneticsandMolecularBiology',
-    'AgriculturalandBiologicalSciences',
-    'EnvironmentalScience',
-    'MaterialsScience',
-    'PhysicsandAstronomy',
-    'BusinessManagementandAccounting',
-    'HealthProfessions',
-    'EconomicsEconometricsandFinance',
-    'Psychology',
-    'Chemistry',
-    'EarthandPlanetarySciences',
-    'Neuroscience',
-    'Mathematics',
-    'ImmunologyandMicrobiology',
-    'DecisionSciences',
-    'Energy',
-    'Nursing',
-    'PharmacologyToxicologyandPharmaceutics',
-    'Dentistry',
-    'ChemicalEngineering',
-    'Veterinary'
-  ];
-
   if (isTestEnv) {
-    return departments[0];
+    return departmentNames[0];
   }
 
   const prompt = `I have a cast video with the following transcript:
@@ -173,7 +143,7 @@ async function determineDepartmentForContent(description) {
 Based on the content, please choose the best matching department from the list below. Respond with only the department name exactly as it appears, without any numbering or extra text.
 
 Departments:
-${departments.join('\n')}
+${departmentNames.join('\n')}
 `;
 
   const response = await client.chat.completions.create({
