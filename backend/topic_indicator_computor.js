@@ -11,6 +11,14 @@ const WIKIPEDIA_SEARCH_URL = 'https://en.wikipedia.org/w/api.php';
 const WIKIMEDIA_PAGEVIEWS_BASE_URL =
   'https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user';
 
+const CACHE_TTL_MS = {
+  openalexAllTime: 30 * 24 * 60 * 60 * 1000,
+  openalexWorks12m: 7 * 24 * 60 * 60 * 1000,
+  wikipediaViews: 7 * 24 * 60 * 60 * 1000,
+};
+
+const BACKOFF_MS = 24 * 60 * 60 * 1000;
+
 const INDICATOR_WEIGHTS = {
   impact: { citations: 0.55, works: 0.25, wikiViews: 0.2 },
   activity: { works12m: 0.45, citations12m: 0.35, wikiViews: 0.2 },
@@ -61,11 +69,39 @@ const percentileRank = (sortedValues, value) => {
   return (rank / (sortedValues.length - 1)) * 100;
 };
 
-const fetchOpenAlexTopicMetrics = async (openalexID) => {
-  if (!openalexID || isTestEnv) {
-    return { citedByCount: 0, worksCount: 0 };
-  }
+const createRunCache = () => ({
+  openalex: new Map(),
+  openalexWorks12m: new Map(),
+  wikiTitle: new Map(),
+  wikiViews: new Map(),
+});
 
+const ensureTopicMetrics = (topic) => {
+  if (!topic.metrics) {
+    topic.metrics = {};
+  }
+  if (!topic.metrics.openalex) {
+    topic.metrics.openalex = {};
+  }
+  if (!topic.metrics.wikipedia) {
+    topic.metrics.wikipedia = {};
+  }
+  return topic.metrics;
+};
+
+const isFresh = (lastFetchedAt, ttlMs, now) => {
+  if (!lastFetchedAt) {
+    return false;
+  }
+  return now - new Date(lastFetchedAt) < ttlMs;
+};
+
+const setBackoff = (metrics, error, now) => {
+  metrics.lastError = error;
+  metrics.backoffUntil = new Date(now.getTime() + BACKOFF_MS);
+};
+
+const fetchOpenAlexTopicMetrics = async (openalexID) => {
   const openAlexUrl = `${OPENALEX_BASE_URL}/topics/${openalexID}`;
   const response = await axios.get(openAlexUrl);
   const data = response.data || {};
@@ -76,10 +112,6 @@ const fetchOpenAlexTopicMetrics = async (openalexID) => {
 };
 
 const fetchOpenAlexWorksCountLast12Months = async (openalexID, startDate, endDate) => {
-  if (!openalexID || isTestEnv) {
-    return 0;
-  }
-
   const filter = `topics.id:${openalexID},from_publication_date:${startDate},to_publication_date:${endDate}`;
   const response = await axios.get(`${OPENALEX_BASE_URL}/works`, {
     params: {
@@ -91,73 +123,143 @@ const fetchOpenAlexWorksCountLast12Months = async (openalexID, startDate, endDat
   return response.data?.meta?.count || 0;
 };
 
-const fetchWikipediaViews12Months = async (topicName, startCompact, endCompact) => {
-  if (!topicName || isTestEnv) {
-    return 0;
-  }
-
-  try {
-    const searchResponse = await axios.get(WIKIPEDIA_SEARCH_URL, {
-      params: {
-        action: 'query',
-        list: 'search',
-        srsearch: topicName,
-        srlimit: 1,
-        format: 'json',
-      },
-    });
-
-    const title = searchResponse.data?.query?.search?.[0]?.title;
-    if (!title) {
-      return 0;
-    }
-
-    const encodedTitle = encodeURIComponent(title.replace(/ /g, '_'));
-    const pageviewsUrl = `${WIKIMEDIA_PAGEVIEWS_BASE_URL}/${encodedTitle}/daily/${startCompact}/${endCompact}`;
-    const pageviewsResponse = await axios.get(pageviewsUrl);
-
-    const items = pageviewsResponse.data?.items || [];
-    return items.reduce((sum, item) => sum + (item.views || 0), 0);
-  } catch (error) {
-    console.warn(`Wikipedia pageviews not available for "${topicName}": ${error.message}`);
-    return 0;
-  }
+const fetchWikipediaTitle = async (topicName) => {
+  const searchResponse = await axios.get(WIKIPEDIA_SEARCH_URL, {
+    params: {
+      action: 'query',
+      list: 'search',
+      srsearch: topicName,
+      srlimit: 1,
+      format: 'json',
+    },
+  });
+  return searchResponse.data?.query?.search?.[0]?.title || null;
 };
 
-const computeRawIndicatorsForTopic = async (topic) => {
+const fetchWikipediaViews12Months = async (title, startCompact, endCompact) => {
+  const encodedTitle = encodeURIComponent(title.replace(/ /g, '_'));
+  const pageviewsUrl = `${WIKIMEDIA_PAGEVIEWS_BASE_URL}/${encodedTitle}/daily/${startCompact}/${endCompact}`;
+  const pageviewsResponse = await axios.get(pageviewsUrl);
+
+  const items = pageviewsResponse.data?.items || [];
+  return items.reduce((sum, item) => sum + (item.views || 0), 0);
+};
+
+const computeRawIndicatorsForTopic = async (topic, runCache = createRunCache()) => {
   const { startDate, endDate, startCompact, endCompact } = getLast12MonthsRange();
+  const now = new Date();
+  const metrics = ensureTopicMetrics(topic);
 
-  let citedByCount = 0;
-  let worksCount = 0;
-  let worksLast12Months = 0;
+  let citedByCount = metrics.openalex.citedByCount || 0;
+  let worksCount = metrics.openalex.worksCount || 0;
+  let worksLast12Months = metrics.openalex.worksLast12Months || 0;
+  let wikiViews12Months = metrics.wikipedia.views12Months || 0;
 
-  if (topic.openalexID) {
-    try {
-      const openAlexMetrics = await fetchOpenAlexTopicMetrics(topic.openalexID);
-      citedByCount = openAlexMetrics.citedByCount;
-      worksCount = openAlexMetrics.worksCount;
-    } catch (error) {
-      console.error(`Error fetching OpenAlex metrics for "${topic.name}":`, error.message);
+  const backoffActive =
+    metrics.backoffUntil && new Date(metrics.backoffUntil).getTime() > now.getTime();
+
+  if (!isTestEnv && !backoffActive && topic.openalexID) {
+    const openalexCacheKey = topic.openalexID;
+    const openalexCached = runCache.openalex.get(openalexCacheKey);
+    if (openalexCached) {
+      citedByCount = openalexCached.citedByCount;
+      worksCount = openalexCached.worksCount;
+    } else if (isFresh(metrics.openalex.lastFetchedAt, CACHE_TTL_MS.openalexAllTime, now)) {
+      citedByCount = metrics.openalex.citedByCount || 0;
+      worksCount = metrics.openalex.worksCount || 0;
+    } else {
+      try {
+        const openAlexMetrics = await fetchOpenAlexTopicMetrics(topic.openalexID);
+        citedByCount = openAlexMetrics.citedByCount;
+        worksCount = openAlexMetrics.worksCount;
+        metrics.openalex.citedByCount = citedByCount;
+        metrics.openalex.worksCount = worksCount;
+        metrics.openalex.lastFetchedAt = now;
+        metrics.lastError = null;
+        runCache.openalex.set(openalexCacheKey, openAlexMetrics);
+      } catch (error) {
+        console.error(`Error fetching OpenAlex metrics for "${topic.name}":`, error.message);
+        setBackoff(metrics, `openalex: ${error.message}`, now);
+      }
     }
 
-    try {
-      worksLast12Months = await fetchOpenAlexWorksCountLast12Months(
-        topic.openalexID,
-        startDate,
-        endDate
-      );
-    } catch (error) {
-      console.error(`Error fetching OpenAlex 12-month works for "${topic.name}":`, error.message);
+    const worksCacheKey = `${topic.openalexID}:${startDate}:${endDate}`;
+    const worksCached = runCache.openalexWorks12m.get(worksCacheKey);
+    if (worksCached !== undefined) {
+      worksLast12Months = worksCached;
+    } else if (isFresh(metrics.openalex.lastWorksFetchedAt, CACHE_TTL_MS.openalexWorks12m, now)) {
+      worksLast12Months = metrics.openalex.worksLast12Months || 0;
+    } else {
+      try {
+        worksLast12Months = await fetchOpenAlexWorksCountLast12Months(
+          topic.openalexID,
+          startDate,
+          endDate
+        );
+        metrics.openalex.worksLast12Months = worksLast12Months;
+        metrics.openalex.lastWorksFetchedAt = now;
+        metrics.lastError = null;
+        runCache.openalexWorks12m.set(worksCacheKey, worksLast12Months);
+      } catch (error) {
+        console.error(`Error fetching OpenAlex 12-month works for "${topic.name}":`, error.message);
+        setBackoff(metrics, `openalex-works: ${error.message}`, now);
+      }
     }
-  } else {
+  } else if (!topic.openalexID) {
     console.warn(`No openalexID for topic "${topic.name}". Falling back to Wikipedia only.`);
   }
 
-  const wikiViews12Months = await fetchWikipediaViews12Months(
-    topic.name,
-    startCompact,
-    endCompact
-  );
+  if (!isTestEnv && !backoffActive) {
+    let wikiTitle = metrics.wikipedia.title;
+    if (!wikiTitle) {
+      const cachedTitle = runCache.wikiTitle.get(topic.name);
+      if (cachedTitle) {
+        wikiTitle = cachedTitle;
+      } else if (!isFresh(metrics.wikipedia.lastFetchedAt, CACHE_TTL_MS.wikipediaViews, now)) {
+        try {
+          wikiTitle = await fetchWikipediaTitle(topic.name);
+          metrics.wikipedia.title = wikiTitle;
+          runCache.wikiTitle.set(topic.name, wikiTitle);
+          metrics.lastError = null;
+        } catch (error) {
+          console.warn(`Wikipedia lookup failed for "${topic.name}": ${error.message}`);
+          setBackoff(metrics, `wikipedia-search: ${error.message}`, now);
+        }
+      }
+    }
+
+    if (!wikiTitle && isFresh(metrics.wikipedia.lastFetchedAt, CACHE_TTL_MS.wikipediaViews, now)) {
+      wikiViews12Months = metrics.wikipedia.views12Months || 0;
+    }
+
+    if (wikiTitle) {
+      const cachedViews = runCache.wikiViews.get(wikiTitle);
+      if (cachedViews !== undefined) {
+        wikiViews12Months = cachedViews;
+      } else if (isFresh(metrics.wikipedia.lastFetchedAt, CACHE_TTL_MS.wikipediaViews, now)) {
+        wikiViews12Months = metrics.wikipedia.views12Months || 0;
+      } else {
+        try {
+          wikiViews12Months = await fetchWikipediaViews12Months(
+            wikiTitle,
+            startCompact,
+            endCompact
+          );
+          metrics.wikipedia.views12Months = wikiViews12Months;
+          metrics.wikipedia.lastFetchedAt = now;
+          metrics.lastError = null;
+          runCache.wikiViews.set(wikiTitle, wikiViews12Months);
+        } catch (error) {
+          console.warn(`Wikipedia pageviews not available for "${wikiTitle}": ${error.message}`);
+          setBackoff(metrics, `wikipedia-views: ${error.message}`, now);
+        }
+      }
+    } else if (metrics.wikipedia.lastFetchedAt === null) {
+      metrics.wikipedia.lastFetchedAt = now;
+      metrics.wikipedia.views12Months = 0;
+    }
+  }
+
   const estimatedCitations12Months = estimateCitations12m(
     citedByCount,
     worksCount,
@@ -183,6 +285,7 @@ const computeRawIndicatorsForTopic = async (topic) => {
       worksLast12Months,
       wikiViews12Months,
       estimatedCitations12Months,
+      backoffActive,
     },
   };
 };
@@ -210,6 +313,9 @@ async function computeImpactForTopic(topic) {
 
     topic.impact = impactRaw;
     topic.activity = activityRaw;
+    if (topic.metrics) {
+      topic.metrics.lastComputedAt = new Date();
+    }
     await topic.save();
 
     console.log(`Updated topic "${topic.name}": impact = ${topic.impact}, activity = ${topic.activity}`);
@@ -231,8 +337,9 @@ async function computeImpactForAllTopics() {
     console.log(`Found ${topics.length} topic(s) for impact update.`);
 
     const rawResults = [];
+    const runCache = createRunCache();
     for (const topic of topics) {
-      const rawIndicators = await computeRawIndicatorsForTopic(topic);
+      const rawIndicators = await computeRawIndicatorsForTopic(topic, runCache);
       rawResults.push({
         topic,
         impactRaw: rawIndicators.impactRaw,
@@ -249,6 +356,9 @@ async function computeImpactForAllTopics() {
 
       entry.topic.impact = Number(impactPercentile.toFixed(2));
       entry.topic.activity = Number(activityPercentile.toFixed(2));
+      if (entry.topic.metrics) {
+        entry.topic.metrics.lastComputedAt = new Date();
+      }
       await entry.topic.save();
     }
 

@@ -6,7 +6,7 @@ const Topic = require('../models/topic_model.js');
 
 jest.mock('axios');
 
-jest.setTimeout(300000);
+jest.setTimeout(30000);
 
 let mongoServer;
 let originalNodeEnv;
@@ -143,6 +143,48 @@ test('computeImpactForTopic uses OpenAlex and Wikipedia data to compute raw scor
   expect(updated.impact).toBeCloseTo(expectedImpact, 6);
   expect(updated.activity).toBeCloseTo(expectedActivity, 6);
   expect(axios.get).toHaveBeenCalled();
+});
+
+test('computeImpactForTopic uses cached metrics when fresh and skips external calls', async () => {
+  const now = new Date();
+  const topic = await Topic.create({
+    name: 'Cached Topic',
+    departmentName: 'Physics',
+    openalexID: 'T-CACHED',
+    metrics: {
+      openalex: {
+        citedByCount: 500,
+        worksCount: 50,
+        worksLast12Months: 5,
+        lastFetchedAt: now,
+        lastWorksFetchedAt: now,
+      },
+      wikipedia: {
+        title: 'Cached Topic',
+        views12Months: 2500,
+        lastFetchedAt: now,
+      },
+    },
+  });
+
+  axios.get.mockImplementation(() => {
+    throw new Error('External call should not happen');
+  });
+
+  const { computeImpactForTopic } = loadComputor();
+  await computeImpactForTopic(topic);
+
+  expect(axios.get).not.toHaveBeenCalled();
+
+  const updated = await Topic.findById(topic._id).lean();
+  const estimatedCitations12m = (500 / 50) * 5;
+  const expectedImpact =
+    0.55 * log10p(500) + 0.25 * log10p(50) + 0.2 * log10p(2500);
+  const expectedActivity =
+    0.45 * log10p(5) + 0.35 * log10p(estimatedCitations12m) + 0.2 * log10p(2500);
+
+  expect(updated.impact).toBeCloseTo(expectedImpact, 6);
+  expect(updated.activity).toBeCloseTo(expectedActivity, 6);
 });
 
 test('computeImpactForTopic without openalexID uses Wikipedia only and handles no results', async () => {
