@@ -1,13 +1,15 @@
 const axios = require('axios');
 const { departmentNames, departmentIdByName } = require('../lists/departments');
+const { reportOpenAIAuthError, reportOpenAIMissingApiKey } = require('./openai_alerts');
 
 const isTestEnv = process.env.NODE_ENV === 'test';
+const openaiApiKey = process.env.OPENAI_API_KEY;
 
 let client = null;
 if (!isTestEnv) {
   const openai = require('openai');
   client = new openai({
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey: openaiApiKey,
   });
 }
  
@@ -43,23 +45,33 @@ async function determineBestTopic(description, topics, contentType) {
     return topics.length ? topics[0].display_name : null;
   }
 
+  if (!openaiApiKey) {
+    await reportOpenAIMissingApiKey({ operation: 'determineBestTopic' });
+    throw new Error('OpenAI API key not configured. Set OPENAI_API_KEY.');
+  }
+
   const contentText = contentType === 'article' ? "article" : "cast";
   const topicsText = topics.map(topic => topic.display_name).join('\n');
   const prompt = `I have a ${contentText} with the following description:\n\n"${description}"\n\nHere is a list of topics from the field (one per line). Based on the description, which one of these topics best matches the ${contentText}? Respond with only the topic name exactly as it appears in the list, without any numbering or extra characters.\n\nTopics:\n${topicsText}`;
- 
-  const response = await client.chat.completions.create({
-    model: 'gpt-4',
-    messages: [
-      { role: 'system', content: 'You are an expert in categorizing research topics.' },
-      { role: 'user', content: prompt }
-    ],
-    max_tokens: 50,
-    temperature: 0.3,
-  });
- 
-  const bestTopicNameRaw = response.choices[0].message.content.trim();
-  const bestTopicName = bestTopicNameRaw.replace(/^\d+\.\s*/, '');
-  return bestTopicName;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        { role: 'system', content: 'You are an expert in categorizing research topics.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 50,
+      temperature: 0.3,
+    });
+   
+    const bestTopicNameRaw = response.choices[0].message.content.trim();
+    const bestTopicName = bestTopicNameRaw.replace(/^\d+\.\s*/, '');
+    return bestTopicName;
+  } catch (error) {
+    await reportOpenAIAuthError(error, { operation: 'determineBestTopic' });
+    throw error;
+  }
 }
  
 /**
@@ -136,6 +148,11 @@ async function determineDepartmentForContent(description) {
     return departmentNames[0];
   }
 
+  if (!openaiApiKey) {
+    await reportOpenAIMissingApiKey({ operation: 'determineDepartmentForContent' });
+    throw new Error('OpenAI API key not configured. Set OPENAI_API_KEY.');
+  }
+
   const prompt = `I have a cast video with the following transcript:
   
 "${description}"
@@ -146,18 +163,23 @@ Departments:
 ${departmentNames.join('\n')}
 `;
 
-  const response = await client.chat.completions.create({
-    model: 'gpt-4',
-    messages: [
-      { role: 'system', content: 'You are an expert in categorizing academic content by department.' },
-      { role: 'user', content: prompt }
-    ],
-    max_tokens: 50,
-    temperature: 0.3,
-  });
+  try {
+    const response = await client.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        { role: 'system', content: 'You are an expert in categorizing academic content by department.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 50,
+      temperature: 0.3,
+    });
 
-  const bestDepartment = response.choices[0].message.content.trim();
-  return bestDepartment;
+    const bestDepartment = response.choices[0].message.content.trim();
+    return bestDepartment;
+  } catch (error) {
+    await reportOpenAIAuthError(error, { operation: 'determineDepartmentForContent' });
+    throw error;
+  }
 }
  
 module.exports = {
