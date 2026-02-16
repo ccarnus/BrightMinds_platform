@@ -29,7 +29,9 @@ const userSchema = mongoose.Schema({
         answered: { type: Boolean, required: false }
     }],
     bookmarkedcontent: [{
-        contentid: { type: String, required: false }
+        contentid: { type: String, required: false },
+        type: { type: String, enum: ['cast', 'article'], required: false },
+        bookmarkedAt: { type: Date, default: Date.now }
     }],
     preferences: [{
         category: { type: String, required: true },

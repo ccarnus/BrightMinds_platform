@@ -753,15 +753,31 @@ paths:
       summary: Get user bookmarks
       parameters:
         - $ref: "#/components/parameters/IdParam"
+        - name: expand
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include full content objects with each bookmark.
+        - name: includeContent
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Alias for expand.
       responses:
         "200":
           description: Bookmarks
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Bookmark"
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/Bookmark"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/BookmarkExpanded"
   /user/add/bookmarks/{id}:
     post:
       tags: [User]
@@ -773,29 +789,51 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                castId:
-                  type: string
-              required: [castId]
+              oneOf:
+                - type: object
+                  properties:
+                    contentId:
+                      type: string
+                    type:
+                      type: string
+                      enum: [cast, article]
+                  required: [contentId]
+                - type: object
+                  properties:
+                    castId:
+                      type: string
+                      deprecated: true
+                  required: [castId]
+                - type: object
+                  properties:
+                    articleId:
+                      type: string
+                      deprecated: true
+                  required: [articleId]
       responses:
         "201":
           description: Bookmark added
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
-  /user/remove/bookmarks/{id}/{castId}:
+                $ref: "#/components/schemas/BookmarkAddResponse"
+  /user/remove/bookmarks/{id}/{contentId}:
     delete:
       tags: [User]
       summary: Remove bookmark
       parameters:
         - $ref: "#/components/parameters/IdParam"
-        - name: castId
+        - name: contentId
           in: path
           required: true
           schema:
             type: string
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [cast, article]
       responses:
         "200":
           description: Bookmark removed
@@ -1581,6 +1619,35 @@ components:
       properties:
         contentid:
           type: string
+        type:
+          type: string
+          enum: [cast, article]
+        bookmarkedAt:
+          type: string
+          format: date-time
+    BookmarkExpanded:
+      type: object
+      properties:
+        contentid:
+          type: string
+        type:
+          type: string
+          enum: [cast, article]
+        bookmarkedAt:
+          type: string
+          format: date-time
+        content:
+          nullable: true
+          oneOf:
+            - $ref: "#/components/schemas/Cast"
+            - $ref: "#/components/schemas/Article"
+    BookmarkAddResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        bookmark:
+          $ref: "#/components/schemas/Bookmark"
     Preference:
       type: object
       properties:

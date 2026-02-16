@@ -1,13 +1,12 @@
 const isTestEnv = process.env.NODE_ENV === 'test';
+const openaiApiKey = process.env.OPENAI_API_KEY;
+
+const { reportOpenAIAuthError, reportOpenAIMissingApiKey } = require('./openai_alerts');
 
 let client = null;
 if (!isTestEnv) {
-  const openai = require('openai');
-
-  // Set your OpenAI API key
-  //test
-  const apikey = process.env.OPENAI_API_KEY;
-  client = new openai({apikey});
+  const OpenAI = require('openai');
+  client = new OpenAI({ apiKey: openaiApiKey });
 }
 
 function cleanAnswerChoice(choice) {
@@ -31,8 +30,9 @@ const generateEvaluation = async (description) => {
   }
 
   try {
-    if (!client) {
-      console.error('OpenAI client not configured. Set OPENAI_API_KEY.');
+    if (!openaiApiKey) {
+      await reportOpenAIMissingApiKey({ operation: 'generateEvaluation' });
+      console.error('OpenAI API key not configured. Set OPENAI_API_KEY.');
       return null;
     }
 
@@ -85,6 +85,7 @@ const generateEvaluation = async (description) => {
 
     return evaluation;
   } catch (error) {
+    await reportOpenAIAuthError(error, { operation: 'generateEvaluation' });
     console.error('Error generating question:', error);
     return null;
   }

@@ -1,4 +1,5 @@
 const User = require('../models/user_model.js');
+const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const emailVerificator = require('../backend/email_verificator.js');
 const jwt = require('jsonwebtoken');
@@ -12,6 +13,50 @@ const nodemailer = require('nodemailer');
 
 const EMAIL_PWD = process.env.EMAIL_PWD;
 const API_BASE_URL = 'https://api.brightmindsresearch.com'
+
+const normalizeContentType = (value) => {
+    if (!value) {
+        return null;
+    }
+    const type = String(value).toLowerCase();
+    if (type === 'cast' || type === 'article') {
+        return type;
+    }
+    return null;
+};
+
+const resolveBookmarkInput = (reqBody = {}) => {
+    const contentId =
+        reqBody.contentId ||
+        reqBody.contentid ||
+        reqBody.castId ||
+        reqBody.articleId ||
+        null;
+
+    let type = normalizeContentType(reqBody.type || reqBody.contentType);
+    if (!type) {
+        if (reqBody.castId) {
+            type = 'cast';
+        } else if (reqBody.articleId) {
+            type = 'article';
+        }
+    }
+
+    return {
+        contentId: contentId ? String(contentId).trim() : null,
+        type,
+    };
+};
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+const normalizeBoolean = (value) => {
+    if (value === true) return true;
+    if (value === false) return false;
+    if (value === undefined || value === null) return false;
+    const normalized = String(value).toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+};
 
 const getTargetValue = (objective) => {
     switch (objective) {
@@ -461,7 +506,7 @@ exports.login = (req, res, next) => {
 exports.getAllUser = async (req, res, next) => {
     try {
       const users = await User.find()
-        .select('_id email username role profilePictureUrl evaluation_list preferences tracking castPublications articlePublications university verificationToken isVerified'); 
+        .select('_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences tracking castPublications articlePublications university verificationToken isVerified'); 
   
       res.status(200).json(users);
     } catch (error) {
@@ -486,6 +531,7 @@ exports.getAllUser = async (req, res, next) => {
         university: user.university,
         profilePictureUrl: user.profilePictureUrl,
         evaluation_list: user.evaluation_list,
+        bookmarkedcontent: user.bookmarkedcontent,
         preferences: user.preferences,
         tracking: user.tracking,
         castPublications: user.castPublications,
@@ -711,14 +757,84 @@ exports.getUserBookmarks = async (req, res, next) => {
     const userId = req.params.id;
 
     try {
-        const user = await User.findById(userId);
+        const user = await User.findById(userId).lean();
 
         if (!user) {
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        const bookmarks = user.bookmarkedcontent;
-        res.status(200).json(bookmarks);
+        const bookmarks = Array.isArray(user.bookmarkedcontent) ? user.bookmarkedcontent : [];
+        const expand = normalizeBoolean(req.query.expand || req.query.includeContent);
+
+        if (!expand) {
+            return res.status(200).json(bookmarks);
+        }
+
+        const castIds = new Set();
+        const articleIds = new Set();
+        const unknownIds = new Set();
+
+        bookmarks.forEach((bookmark) => {
+            const contentId = bookmark?.contentid ? String(bookmark.contentid).trim() : null;
+            if (!contentId) {
+                return;
+            }
+            const type = normalizeContentType(bookmark.type);
+            if (type === 'cast') {
+                castIds.add(contentId);
+            } else if (type === 'article') {
+                articleIds.add(contentId);
+            } else {
+                unknownIds.add(contentId);
+            }
+        });
+
+        const castQueryIds = [...new Set([...castIds, ...unknownIds])].filter(isValidObjectId);
+        const articleQueryIds = [...new Set([...articleIds, ...unknownIds])].filter(isValidObjectId);
+
+        const [casts, articles] = await Promise.all([
+            castQueryIds.length ? Cast.find({ _id: { $in: castQueryIds } }).lean() : [],
+            articleQueryIds.length ? Article.find({ _id: { $in: articleQueryIds } }).lean() : [],
+        ]);
+
+        const castMap = new Map(casts.map((cast) => [String(cast._id), cast]));
+        const articleMap = new Map(articles.map((article) => [String(article._id), article]));
+
+        const expandedBookmarks = bookmarks.map((bookmark) => {
+            const contentId = bookmark?.contentid ? String(bookmark.contentid).trim() : null;
+            if (!contentId) {
+                return {
+                    contentid: null,
+                    type: null,
+                    bookmarkedAt: bookmark?.bookmarkedAt || null,
+                    content: null,
+                };
+            }
+
+            let type = normalizeContentType(bookmark.type);
+            let content = null;
+
+            if (type === 'cast') {
+                content = castMap.get(contentId) || null;
+            } else if (type === 'article') {
+                content = articleMap.get(contentId) || null;
+            } else if (castMap.has(contentId)) {
+                type = 'cast';
+                content = castMap.get(contentId);
+            } else if (articleMap.has(contentId)) {
+                type = 'article';
+                content = articleMap.get(contentId);
+            }
+
+            return {
+                contentid: contentId,
+                type,
+                bookmarkedAt: bookmark?.bookmarkedAt || null,
+                content,
+            };
+        });
+
+        return res.status(200).json(expandedBookmarks);
     } catch (error) {
         res.status(500).json({ error: 'An error occurred.' });
     }
@@ -726,25 +842,102 @@ exports.getUserBookmarks = async (req, res, next) => {
 
 exports.addUserBookmark = async (req, res, next) => {
     const userId = req.params.id;
-    const castId = String(req.body.castId);
+    const { contentId, type } = resolveBookmarkInput(req.body);
+    const rawType = req.body?.type || req.body?.contentType;
 
     try {
+        if (rawType && !normalizeContentType(rawType)) {
+            return res.status(400).json({ message: 'Invalid content type.' });
+        }
+
+        if (!contentId) {
+            return res.status(400).json({ message: 'contentId is required.' });
+        }
+
+        if (!isValidObjectId(contentId)) {
+            return res.status(400).json({ message: 'Invalid contentId.' });
+        }
+
         const userExists = await User.exists({ _id: userId });
         if (!userExists) {
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        // Add only if the content is not already present (protects against duplicates).
+        let resolvedType = normalizeContentType(type);
+        let castFound = null;
+        let articleFound = null;
+        if (!resolvedType) {
+            const [cast, article] = await Promise.all([
+                Cast.findById(contentId).select('_id').lean(),
+                Article.findById(contentId).select('_id').lean(),
+            ]);
+            castFound = !!cast;
+            articleFound = !!article;
+            if (cast && article) {
+                return res.status(400).json({ message: 'Content type is required.' });
+            }
+            if (!cast && !article) {
+                return res.status(404).json({ message: 'Content not found.' });
+            }
+            resolvedType = cast ? 'cast' : 'article';
+        }
+
+        if (resolvedType === 'cast') {
+            if (castFound === null) {
+                castFound = await Cast.exists({ _id: contentId });
+            }
+            if (!castFound) {
+                return res.status(404).json({ message: 'Cast not found.' });
+            }
+        } else if (resolvedType === 'article') {
+            if (articleFound === null) {
+                articleFound = await Article.exists({ _id: contentId });
+            }
+            if (!articleFound) {
+                return res.status(404).json({ message: 'Article not found.' });
+            }
+        } else {
+            return res.status(400).json({ message: 'Invalid content type.' });
+        }
+
         const addBookmarkResult = await User.updateOne(
-            { _id: userId, "bookmarkedcontent.contentid": { $ne: castId } },
-            { $push: { bookmarkedcontent: { contentid: castId } } }
+            { _id: userId, "bookmarkedcontent.contentid": { $ne: contentId } },
+            {
+                $push: {
+                    bookmarkedcontent: {
+                        contentid: contentId,
+                        type: resolvedType,
+                        bookmarkedAt: new Date(),
+                    },
+                },
+            }
         );
 
-        if (addBookmarkResult.matchedCount === 0) {
+        if (addBookmarkResult.modifiedCount === 0) {
+            await User.updateOne(
+                {
+                    _id: userId,
+                    "bookmarkedcontent.contentid": contentId,
+                    "bookmarkedcontent.type": { $exists: false },
+                },
+                {
+                    $set: {
+                        "bookmarkedcontent.$.type": resolvedType,
+                        "bookmarkedcontent.$.bookmarkedAt": new Date(),
+                    },
+                }
+            );
+
             return res.status(400).json({ message: 'Element is already bookmarked.' });
         }
 
-        res.status(201).json({ message: 'Element bookmarked.' });
+        res.status(201).json({
+            message: 'Element bookmarked.',
+            bookmark: {
+                contentid: contentId,
+                type: resolvedType,
+            },
+        });
     } catch (error) {
         res.status(500).json({ error: 'An error occurred.' });
     }
@@ -752,21 +945,40 @@ exports.addUserBookmark = async (req, res, next) => {
 
 exports.removeUserBookmark = async (req, res, next) => {
     const userId = req.params.id;
-    const castId = req.params.castId;
+    const contentId =
+        req.params.castId ||
+        req.params.contentId ||
+        req.body?.contentId ||
+        null;
 
     try {
-        const user = await User.findById(userId);
+        if (!contentId) {
+            return res.status(400).json({ message: 'contentId is required.' });
+        }
 
-        if (!user) {
+        const userExists = await User.exists({ _id: userId });
+        if (!userExists) {
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        // Filter out the bookmarked element with the specified castId
-        user.bookmarkedcontent = user.bookmarkedcontent.filter(
-            (bookmark) => bookmark.contentid !== castId
+        const rawType = req.query.type || req.query.contentType || req.body?.type || req.body?.contentType;
+        if (rawType && !normalizeContentType(rawType)) {
+            return res.status(400).json({ message: 'Invalid content type.' });
+        }
+        const normalizedType = normalizeContentType(rawType);
+
+        const pullFilter = normalizedType
+            ? { contentid: String(contentId), type: normalizedType }
+            : { contentid: String(contentId) };
+
+        const removeResult = await User.updateOne(
+            { _id: userId },
+            { $pull: { bookmarkedcontent: pullFilter } }
         );
 
-        await user.save();
+        if (removeResult.modifiedCount === 0) {
+            return res.status(404).json({ message: 'Bookmark not found.' });
+        }
 
         res.status(200).json({ message: 'Element removed from bookmarks.' });
     } catch (error) {

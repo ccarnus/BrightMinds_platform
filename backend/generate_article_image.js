@@ -4,12 +4,13 @@ const axios = require('axios');
 const sharp = require('sharp');
 
 const isTestEnv = process.env.NODE_ENV === 'test';
+const openaiApiKey = process.env.OPENAI_API_KEY;
+const { reportOpenAIAuthError, reportOpenAIMissingApiKey } = require('./openai_alerts');
 
 let client = null;
 if (!isTestEnv) {
-  const openai = require('openai');
-  const apikey = process.env.OPENAI_API_KEY;
-  client = new openai({apikey});
+  const OpenAI = require('openai');
+  client = new OpenAI({ apiKey: openaiApiKey });
 }
 
 async function downloadImage(url, filepath) {
@@ -48,8 +49,9 @@ async function generateArticleImage(description) {
 
     const modifiedDescription = `Create a simple, realistic academic illustration with no text. The image should be clean and minimal, focusing only on the most essential elements to illustrate the main idea. Use neutral or light-colored backgrounds that do not distract from the subject. The overall style should be realistic and clear, suitable for an educational or academic context. Do not include any additional text or decorative elements. The illustration should effectively convey the following concept: ${description}.`;
     try {
-        if (!client) {
-            console.error('OpenAI client not configured. Set OPENAI_API_KEY.');
+        if (!openaiApiKey) {
+            await reportOpenAIMissingApiKey({ operation: 'generateArticleImage' });
+            console.error('OpenAI API key not configured. Set OPENAI_API_KEY.');
             return null;
         }
 
@@ -75,6 +77,7 @@ async function generateArticleImage(description) {
 
         return resizedImagePath;
     } catch (error) {
+        await reportOpenAIAuthError(error, { operation: 'generateArticleImage' });
         console.error('Error generating article image:', error);
         return null;
     }

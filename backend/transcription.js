@@ -7,6 +7,7 @@ ffmpeg.setFfmpegPath(require('@ffmpeg-installer/ffmpeg').path);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
+const { reportOpenAIAuthError, reportOpenAIMissingApiKey } = require('./openai_alerts');
 
 function buildSRTFromSegments(segments) {
   return segments
@@ -42,6 +43,11 @@ function toSRTTimestamp(seconds) {
  * @returns {Promise<{ text: string, srt: string }>}
  */
 const transcribeVideo = (videoPath) => {
+  if (!OPENAI_API_KEY) {
+    reportOpenAIMissingApiKey({ operation: 'transcribeVideo' });
+    return Promise.reject('OpenAI API key not configured. Set OPENAI_API_KEY.');
+  }
+
   return new Promise((resolve, reject) => {
     const { PassThrough } = require('stream');
     const audioStream = new PassThrough();
@@ -81,6 +87,7 @@ const transcribeVideo = (videoPath) => {
           // Return both the plain text and the SRT
           resolve({ text: fullTranscript, srt: srtContent });
         } catch (err) {
+          await reportOpenAIAuthError(err, { operation: 'transcribeVideo' });
           reject(`Error transcribing audio: ${err.message}`);
         }
       })
