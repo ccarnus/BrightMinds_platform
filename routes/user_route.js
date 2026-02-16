@@ -21,7 +21,7 @@ router.post('/mark/content/as/answered/:id', userCtrl.markContentAsAnswered);
 //Bookmarks
 router.get('/bookmarks/:id', userCtrl.getUserBookmarks);
 router.post('/add/bookmarks/:id', userCtrl.addUserBookmark);
-router.delete('/remove/bookmarks/:id/:castId', userCtrl.removeUserBookmark);
+router.delete('/remove/bookmarks/:id/:contentId', userCtrl.removeUserBookmark);
 //Preferences
 router.get('/:id/preferences', userCtrl.getUserPreferences);
 router.post('/:id/preferences', userCtrl.updateUserPreferences);

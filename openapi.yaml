@@ -753,6 +753,12 @@ paths:
       summary: Get user bookmarks
       parameters:
         - $ref: "#/components/parameters/IdParam"
+        - name: expand
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include full content objects with each bookmark.
       responses:
         "200":
           description: Bookmarks
@@ -775,9 +781,18 @@ paths:
             schema:
               type: object
               properties:
+                contentId:
+                  type: string
+                type:
+                  type: string
+                  enum: [cast, article]
                 castId:
                   type: string
-              required: [castId]
+                  deprecated: true
+                articleId:
+                  type: string
+                  deprecated: true
+              required: [contentId, type]
       responses:
         "201":
           description: Bookmark added
@@ -785,17 +800,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
-  /user/remove/bookmarks/{id}/{castId}:
+  /user/remove/bookmarks/{id}/{contentId}:
     delete:
       tags: [User]
       summary: Remove bookmark
       parameters:
         - $ref: "#/components/parameters/IdParam"
-        - name: castId
+        - name: contentId
           in: path
           required: true
           schema:
             type: string
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [cast, article]
       responses:
         "200":
           description: Bookmark removed
@@ -1581,6 +1602,12 @@ components:
       properties:
         contentid:
           type: string
+        type:
+          type: string
+          enum: [cast, article]
+        bookmarkedAt:
+          type: string
+          format: date-time
     Preference:
       type: object
       properties:
