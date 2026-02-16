@@ -759,15 +759,25 @@ paths:
           schema:
             type: boolean
           description: Include full content objects with each bookmark.
+        - name: includeContent
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Alias for expand.
       responses:
         "200":
           description: Bookmarks
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Bookmark"
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/Bookmark"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/BookmarkExpanded"
   /user/add/bookmarks/{id}:
     post:
       tags: [User]
@@ -779,27 +789,34 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                contentId:
-                  type: string
-                type:
-                  type: string
-                  enum: [cast, article]
-                castId:
-                  type: string
-                  deprecated: true
-                articleId:
-                  type: string
-                  deprecated: true
-              required: [contentId, type]
+              oneOf:
+                - type: object
+                  properties:
+                    contentId:
+                      type: string
+                    type:
+                      type: string
+                      enum: [cast, article]
+                  required: [contentId]
+                - type: object
+                  properties:
+                    castId:
+                      type: string
+                      deprecated: true
+                  required: [castId]
+                - type: object
+                  properties:
+                    articleId:
+                      type: string
+                      deprecated: true
+                  required: [articleId]
       responses:
         "201":
           description: Bookmark added
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
+                $ref: "#/components/schemas/BookmarkAddResponse"
   /user/remove/bookmarks/{id}/{contentId}:
     delete:
       tags: [User]
@@ -1608,6 +1625,29 @@ components:
         bookmarkedAt:
           type: string
           format: date-time
+    BookmarkExpanded:
+      type: object
+      properties:
+        contentid:
+          type: string
+        type:
+          type: string
+          enum: [cast, article]
+        bookmarkedAt:
+          type: string
+          format: date-time
+        content:
+          nullable: true
+          oneOf:
+            - $ref: "#/components/schemas/Cast"
+            - $ref: "#/components/schemas/Article"
+    BookmarkAddResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        bookmark:
+          $ref: "#/components/schemas/Bookmark"
     Preference:
       type: object
       properties:
