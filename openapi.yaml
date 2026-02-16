@@ -1,0 +1,1757 @@
+openapi: 3.0.3
+info:
+  title: BrightMinds Backend API
+  version: 1.0.0
+  description: OpenAPI specification for the BrightMinds backend.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.brightmindsresearch.com
+    description: Production
+tags:
+  - name: Cast
+  - name: Article
+  - name: User
+  - name: University
+  - name: VirtualLab
+  - name: Topic
+
+paths:
+  /cast:
+    post:
+      tags: [Cast]
+      summary: Create a cast
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                cast:
+                  type: string
+                  description: JSON string with cast fields
+                file:
+                  type: string
+                  format: binary
+              required: [cast, file]
+      responses:
+        "201":
+          description: Cast created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    get:
+      tags: [Cast]
+      summary: List all casts
+      responses:
+        "200":
+          description: List of casts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /cast/all/simplified:
+    get:
+      tags: [Cast]
+      summary: Get simplified cast list
+      responses:
+        "200":
+          description: Count and simplified cast list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  casts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        _id:
+                          type: string
+                        title:
+                          type: string
+  /cast/{id}:
+    get:
+      tags: [Cast]
+      summary: Get cast by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Cast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Cast]
+      summary: Update cast
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                cast:
+                  type: string
+                  description: JSON string with cast fields
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Cast updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    delete:
+      tags: [Cast]
+      summary: Delete cast
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Cast deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /cast/category/{id}:
+    get:
+      tags: [Cast]
+      summary: Get casts by category
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: List of casts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /cast/department/{id}:
+    get:
+      tags: [Cast]
+      summary: Get casts by department
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+        - name: topic
+          in: query
+          schema:
+            type: string
+          required: false
+      responses:
+        "200":
+          description: List of casts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /cast/brightmindid/{id}:
+    get:
+      tags: [Cast]
+      summary: Get casts by creator (brightmindid)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: List of casts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /cast/evaluation/{id}:
+    get:
+      tags: [Cast]
+      summary: Get evaluation for a cast
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Evaluation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  evaluation:
+                    $ref: "#/components/schemas/Evaluation"
+  /cast/{id}/rating:
+    get:
+      tags: [Cast]
+      summary: Get cast rating
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Rating
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rating:
+                    $ref: "#/components/schemas/Rating"
+    post:
+      tags: [Cast]
+      summary: Update cast rating
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum: ["+", "-"]
+              required: [action]
+      responses:
+        "200":
+          description: Rating updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  rating:
+                    $ref: "#/components/schemas/Rating"
+  /cast/trending/right/now:
+    get:
+      tags: [Cast]
+      summary: Get trending casts
+      responses:
+        "200":
+          description: Trending casts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /cast/popular/department:
+    get:
+      tags: [Cast]
+      summary: Get most popular departments
+      responses:
+        "200":
+          description: Department popularity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    _id:
+                      type: string
+                    count:
+                      type: integer
+  /article:
+    post:
+      tags: [Article]
+      summary: Create an article
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArticleCreate"
+      responses:
+        "201":
+          description: Article created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    get:
+      tags: [Article]
+      summary: List all articles
+      responses:
+        "200":
+          description: List of articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
+  /article/{id}:
+    get:
+      tags: [Article]
+      summary: Get article by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Article
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Article]
+      summary: Update article
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArticleUpdate"
+      responses:
+        "201":
+          description: Article updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    delete:
+      tags: [Article]
+      summary: Delete article
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Article deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /article/category/{id}:
+    get:
+      tags: [Article]
+      summary: Get articles by category
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: List of articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
+  /article/department/{id}:
+    get:
+      tags: [Article]
+      summary: Get articles by department
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: List of articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
+  /article/brightmindid/{id}:
+    get:
+      tags: [Article]
+      summary: Get articles by creator (brightmindid)
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: List of articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
+  /article/evaluation/{id}:
+    get:
+      tags: [Article]
+      summary: Get evaluation for an article
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Evaluation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  evaluation:
+                    $ref: "#/components/schemas/Evaluation"
+  /article/{id}/rating:
+    get:
+      tags: [Article]
+      summary: Get article rating
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Rating
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rating:
+                    $ref: "#/components/schemas/Rating"
+    post:
+      tags: [Article]
+      summary: Update article rating
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum: ["+", "-"]
+              required: [action]
+      responses:
+        "200":
+          description: Rating updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  rating:
+                    $ref: "#/components/schemas/Rating"
+  /article/trending/right/now:
+    get:
+      tags: [Article]
+      summary: Get trending articles
+      responses:
+        "200":
+          description: Trending articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
+  /user/signup:
+    post:
+      tags: [User]
+      summary: Create a user account
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                user:
+                  type: string
+                  description: JSON string containing user fields
+                file:
+                  type: string
+                  format: binary
+              required: [user, file]
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /user/confirmation/{token}:
+    get:
+      tags: [User]
+      summary: Confirm user email
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: HTML response
+          content:
+            text/html:
+              schema:
+                type: string
+  /user/login:
+    post:
+      tags: [User]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+              required: [email, password]
+      responses:
+        "200":
+          description: Login response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                  email:
+                    type: string
+                  token:
+                    type: string
+  /user:
+    get:
+      tags: [User]
+      summary: List users
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+  /user/{id}:
+    get:
+      tags: [User]
+      summary: Get user by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: User
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+    put:
+      tags: [User]
+      summary: Update user
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                user:
+                  type: string
+                  description: JSON string with user fields
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: User updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    delete:
+      tags: [User]
+      summary: Delete user
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/reset-password-request:
+    post:
+      tags: [User]
+      summary: Request password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+              required: [email]
+      responses:
+        "200":
+          description: Reset email sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/reset-password/{token}:
+    get:
+      tags: [User]
+      summary: Show reset password form
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: HTML response
+          content:
+            text/html:
+              schema:
+                type: string
+    post:
+      tags: [User]
+      summary: Reset password
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:
+                  type: string
+                confirmPassword:
+                  type: string
+              required: [password, confirmPassword]
+      responses:
+        "200":
+          description: Password updated
+          content:
+            text/html:
+              schema:
+                type: string
+  /user/add/content/{id}:
+    post:
+      tags: [User]
+      summary: Add content to evaluation list
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contentId:
+                  type: string
+                type:
+                  type: string
+                  enum: [cast, article]
+              required: [contentId, type]
+      responses:
+        "200":
+          description: Content added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/remove/content/{id}:
+    post:
+      tags: [User]
+      summary: Remove content from evaluation list
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contentId:
+                  type: string
+              required: [contentId]
+      responses:
+        "200":
+          description: Content removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/mark/content/as/answered/{id}:
+    post:
+      tags: [User]
+      summary: Mark content as answered
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contentId:
+                  type: string
+              required: [contentId]
+      responses:
+        "200":
+          description: Content marked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/bookmarks/{id}:
+    get:
+      tags: [User]
+      summary: Get user bookmarks
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Bookmarks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Bookmark"
+  /user/add/bookmarks/{id}:
+    post:
+      tags: [User]
+      summary: Add bookmark
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                castId:
+                  type: string
+              required: [castId]
+      responses:
+        "201":
+          description: Bookmark added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/remove/bookmarks/{id}/{castId}:
+    delete:
+      tags: [User]
+      summary: Remove bookmark
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+        - name: castId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bookmark removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /user/{id}/preferences:
+    get:
+      tags: [User]
+      summary: Get user preferences
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Preference"
+    post:
+      tags: [User]
+      summary: Update user preferences
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category:
+                  type: string
+                modification:
+                  type: string
+                  enum: [positive, negative]
+              required: [category, modification]
+      responses:
+        "200":
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  preferences:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Preference"
+  /user/{id}/suggested/for/you:
+    get:
+      tags: [User]
+      summary: Get suggested casts for user
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: List of casts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /user/{id}/update/tracking:
+    put:
+      tags: [User]
+      summary: Update user tracking objective
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                objective:
+                  type: string
+                  enum: [Follower, Explorer, Deep Learner, Career, Researcher]
+              required: [objective]
+      responses:
+        "200":
+          description: Tracking updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  tracking:
+                    $ref: "#/components/schemas/UserTracking"
+  /user/{id}/tracking:
+    get:
+      tags: [User]
+      summary: Get user tracking
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Tracking
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tracking:
+                    $ref: "#/components/schemas/UserTracking"
+                  target:
+                    type: number
+  /university:
+    post:
+      tags: [University]
+      summary: Create university
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                university:
+                  type: string
+                  description: JSON string with university fields
+                file:
+                  type: string
+                  format: binary
+              required: [university, file]
+      responses:
+        "201":
+          description: University created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    get:
+      tags: [University]
+      summary: List universities
+      responses:
+        "200":
+          description: Universities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/University"
+  /university/{id}:
+    get:
+      tags: [University]
+      summary: Get university by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: University
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/University"
+    put:
+      tags: [University]
+      summary: Update university
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                university:
+                  type: string
+                  description: JSON string with university fields
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: University updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    delete:
+      tags: [University]
+      summary: Delete university
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: University deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /university/by/name/{id}:
+    get:
+      tags: [University]
+      summary: Get university by name
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: University
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/University"
+  /virtual/lab:
+    post:
+      tags: [VirtualLab]
+      summary: Create virtual lab
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                virtuallab:
+                  type: string
+                  description: JSON string with virtual lab fields
+                file:
+                  type: string
+                  format: binary
+              required: [virtuallab, file]
+      responses:
+        "201":
+          description: Virtual lab created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    get:
+      tags: [VirtualLab]
+      summary: List virtual labs
+      responses:
+        "200":
+          description: Virtual labs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VirtualLab"
+  /virtual/lab/{id}:
+    get:
+      tags: [VirtualLab]
+      summary: Get virtual lab by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Virtual lab
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VirtualLab"
+    put:
+      tags: [VirtualLab]
+      summary: Update virtual lab
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                followers:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/VLUserRef"
+                members:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/VLUserRef"
+                topics:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/VLTopic"
+                colorcode:
+                  type: string
+                iconurl:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Virtual lab updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+    delete:
+      tags: [VirtualLab]
+      summary: Delete virtual lab
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Virtual lab deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /virtual/lab/{labId}/add/institute:
+    post:
+      tags: [VirtualLab]
+      summary: Add institute to virtual lab
+      parameters:
+        - name: labId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instituteID:
+                  type: string
+                score:
+                  type: number
+              required: [instituteID]
+      responses:
+        "200":
+          description: Institute added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /virtual/lab/{labId}/update/institute/{instituteId}:
+    put:
+      tags: [VirtualLab]
+      summary: Update institute
+      parameters:
+        - name: labId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instituteId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Institute updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /virtual/lab/{labId}/remove/institute/{instituteId}:
+    delete:
+      tags: [VirtualLab]
+      summary: Remove institute
+      parameters:
+        - name: labId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instituteId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Institute removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /virtual/lab/{id}/add/topic:
+    post:
+      tags: [VirtualLab]
+      summary: Add topic to virtual lab
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VLTopic"
+      responses:
+        "200":
+          description: Topic added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /virtual/lab/{labId}/update/topic/{topicId}:
+    put:
+      tags: [VirtualLab]
+      summary: Update topic in virtual lab
+      parameters:
+        - name: labId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: topicId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Topic updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /virtual/lab/{labId}/remove/topic/{topicId}:
+    delete:
+      tags: [VirtualLab]
+      summary: Remove topic from virtual lab
+      parameters:
+        - name: labId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: topicId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Topic removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+  /topic:
+    post:
+      tags: [Topic]
+      summary: Create or update topic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                departmentName:
+                  type: string
+                openalexID:
+                  type: string
+                contentId:
+                  type: string
+                contentType:
+                  type: string
+                  enum: [article, cast]
+              required: [name, departmentName, contentId, contentType]
+      responses:
+        "200":
+          description: Topic created or updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+    get:
+      tags: [Topic]
+      summary: List topics
+      responses:
+        "200":
+          description: Topics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Topic"
+  /topic/{id}:
+    get:
+      tags: [Topic]
+      summary: Get topic by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Topic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+    put:
+      tags: [Topic]
+      summary: Update topic
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopicUpdate"
+      responses:
+        "200":
+          description: Topic updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+  /topic/department/{departmentName}:
+    get:
+      tags: [Topic]
+      summary: Get topics by department
+      parameters:
+        - name: departmentName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Topics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Topic"
+components:
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        response:
+          type: string
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+    Rating:
+      type: object
+      properties:
+        value:
+          type: number
+        count:
+          type: integer
+    Evaluation:
+      type: object
+      properties:
+        question:
+          type: string
+        responses:
+          type: array
+          items:
+            type: string
+        correct:
+          type: string
+    Cast:
+      type: object
+      properties:
+        _id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        department:
+          type: string
+        brightmindid:
+          type: string
+        casturl:
+          type: string
+        castimageurl:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        duration:
+          type: number
+        dateadded:
+          type: string
+          format: date-time
+        rating:
+          $ref: "#/components/schemas/Rating"
+        evaluation:
+          $ref: "#/components/schemas/Evaluation"
+        topic:
+          type: string
+        subtitleurl:
+          type: string
+    Article:
+      type: object
+      properties:
+        _id:
+          type: string
+        title:
+          type: string
+        department:
+          type: string
+        brightmindid:
+          type: string
+        description:
+          type: string
+        articleimageurl:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        duration:
+          type: number
+        dateadded:
+          type: string
+          format: date-time
+        rating:
+          $ref: "#/components/schemas/Rating"
+        evaluation:
+          $ref: "#/components/schemas/Evaluation"
+        topic:
+          type: string
+    ArticleCreate:
+      type: object
+      properties:
+        title:
+          type: string
+        department:
+          type: string
+        brightmindid:
+          type: string
+        description:
+          type: string
+        articleimageurl:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        duration:
+          type: number
+        topic:
+          type: string
+      required:
+        - title
+        - department
+        - brightmindid
+        - description
+        - articleimageurl
+        - university
+        - category
+        - visibility
+        - duration
+        - topic
+    ArticleUpdate:
+      allOf:
+        - $ref: "#/components/schemas/ArticleCreate"
+    User:
+      type: object
+      properties:
+        _id:
+          type: string
+        email:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+        university:
+          type: string
+        profilePictureUrl:
+          type: string
+        isVerified:
+          type: boolean
+        evaluation_list:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationItem"
+        bookmarkedcontent:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bookmark"
+        preferences:
+          type: array
+          items:
+            $ref: "#/components/schemas/Preference"
+        tracking:
+          $ref: "#/components/schemas/UserTracking"
+        castPublications:
+          type: array
+          items:
+            type: string
+        articlePublications:
+          type: array
+          items:
+            type: string
+    EvaluationItem:
+      type: object
+      properties:
+        contentid:
+          type: string
+        type:
+          type: string
+        watched:
+          type: boolean
+        answered:
+          type: boolean
+    Bookmark:
+      type: object
+      properties:
+        contentid:
+          type: string
+    Preference:
+      type: object
+      properties:
+        category:
+          type: string
+        weight:
+          type: number
+        count:
+          type: number
+    UserTracking:
+      type: object
+      properties:
+        objective:
+          type: string
+        progress:
+          type: number
+        target:
+          type: number
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+              count:
+                type: number
+    University:
+      type: object
+      properties:
+        _id:
+          type: string
+        name:
+          type: string
+        displayedName:
+          type: string
+        iconurl:
+          type: string
+    VirtualLab:
+      type: object
+      properties:
+        _id:
+          type: string
+        name:
+          type: string
+        followers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLUserRef"
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLUserRef"
+        institute:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLInstitute"
+        topics:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLTopic"
+        iconurl:
+          type: string
+        colorcode:
+          type: string
+    VLUserRef:
+      type: object
+      properties:
+        userID:
+          type: string
+    VLInstitute:
+      type: object
+      properties:
+        instituteID:
+          type: string
+        score:
+          type: number
+    VLTopic:
+      type: object
+      properties:
+        name:
+          type: string
+        gage:
+          type: number
+        institutes:
+          type: array
+          items:
+            type: object
+            properties:
+              instituteId:
+                type: string
+        description:
+          type: string
+        followers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLUserRef"
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLUserRef"
+        threads:
+          type: array
+          items:
+            type: object
+            properties:
+              content:
+                type: string
+    Topic:
+      type: object
+      properties:
+        _id:
+          type: string
+        name:
+          type: string
+        departmentName:
+          type: string
+        articleCount:
+          type: integer
+        castCount:
+          type: integer
+        articleIDs:
+          type: array
+          items:
+            type: string
+        castIDs:
+          type: array
+          items:
+            type: string
+        openalexID:
+          type: string
+        activity:
+          type: number
+        impact:
+          type: number
+        metrics:
+          type: object
+          properties:
+            openalex:
+              type: object
+              properties:
+                citedByCount:
+                  type: number
+                worksCount:
+                  type: number
+                worksLast12Months:
+                  type: number
+                lastFetchedAt:
+                  type: string
+                  format: date-time
+                lastWorksFetchedAt:
+                  type: string
+                  format: date-time
+            wikipedia:
+              type: object
+              properties:
+                title:
+                  type: string
+                views12Months:
+                  type: number
+                lastFetchedAt:
+                  type: string
+                  format: date-time
+            lastComputedAt:
+              type: string
+              format: date-time
+            lastError:
+              type: string
+            backoffUntil:
+              type: string
+              format: date-time
+    TopicUpdate:
+      type: object
+      additionalProperties: true
