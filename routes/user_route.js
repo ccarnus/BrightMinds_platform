@@ -1,33 +1,41 @@
 const express = require('express');
-const router = express.Router();
-const userCtrl = require('../controllers/user_controller.js');
-const multer = require('../backend/multer-config_user.js');
+const userController = require('../controllers/user_controller');
+const { authenticate, requireSelf } = require('../middleware/auth');
+const { authRateLimit } = require('../middleware/rate_limit');
+const upload = require('../middleware/upload');
 
-router.post('/signup', multer, userCtrl.signup);
-router.get('/confirmation/:token', userCtrl.confirmation);
-router.post('/login', userCtrl.login);
-router.get('/',userCtrl.getAllUser);
-router.get('/:id',userCtrl.getOneUser);
-router.delete('/:id', userCtrl.deleteOneUser);
-router.put('/:id', multer, userCtrl.updateOneUser);
-//password update
-router.post('/reset-password-request', userCtrl.requestPasswordResetEmail);
-router.get('/reset-password/:token', userCtrl.showResetPasswordForm);
-router.post('/reset-password/:token', userCtrl.resetPassword);
-//add remove content
-router.post('/add/content/:id',userCtrl.updateUserAddContentToList);
-router.post('/remove/content/:id',userCtrl.updateUserRemoveContentFromList);
-router.post('/mark/content/as/answered/:id', userCtrl.markContentAsAnswered);
-//Bookmarks
-router.get('/bookmarks/:id', userCtrl.getUserBookmarks);
-router.post('/add/bookmarks/:id', userCtrl.addUserBookmark);
-router.delete('/remove/bookmarks/:id/:contentId', userCtrl.removeUserBookmark);
-//Preferences
-router.get('/:id/preferences', userCtrl.getUserPreferences);
-router.post('/:id/preferences', userCtrl.updateUserPreferences);
-//Tracking
-router.get('/:id/suggested/for/you',userCtrl.getSuggestedForYou);
-router.put('/:id/update/tracking', userCtrl.updateUserTracking);
-router.get('/:id/tracking', userCtrl.getUserTracking);
+const router = express.Router();
+const self = [authenticate, requireSelf('id')];
+
+// Account
+router.post('/signup', authRateLimit, upload.profilePicture, userController.signup);
+router.get('/confirmation/:token', userController.confirmation);
+router.post('/login', authRateLimit, userController.login);
+router.get('/', authenticate, userController.getAllUser);
+router.get('/:id', authenticate, userController.getOneUser);
+router.put('/:id', self, upload.profilePicture, userController.updateOneUser);
+router.delete('/:id', self, userController.deleteOneUser);
+
+// Password reset (HTML form flow, opened from the email link)
+router.post('/reset-password-request', authRateLimit, userController.requestPasswordResetEmail);
+router.get('/reset-password/:token', userController.showResetPasswordForm);
+router.post('/reset-password/:token', authRateLimit, userController.resetPassword);
+
+// Evaluation list
+router.post('/add/content/:id', self, userController.updateUserAddContentToList);
+router.post('/remove/content/:id', self, userController.updateUserRemoveContentFromList);
+router.post('/mark/content/as/answered/:id', self, userController.markContentAsAnswered);
+
+// Bookmarks
+router.get('/bookmarks/:id', self, userController.getUserBookmarks);
+router.post('/add/bookmarks/:id', self, userController.addUserBookmark);
+router.delete('/remove/bookmarks/:id/:contentId', self, userController.removeUserBookmark);
+
+// Preferences & tracking
+router.get('/:id/preferences', self, userController.getUserPreferences);
+router.post('/:id/preferences', self, userController.updateUserPreferences);
+router.get('/:id/suggested/for/you', self, userController.getSuggestedForYou);
+router.put('/:id/update/tracking', self, userController.updateUserTracking);
+router.get('/:id/tracking', self, userController.getUserTracking);
 
 module.exports = router;

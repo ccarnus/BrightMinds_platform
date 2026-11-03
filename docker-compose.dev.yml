@@ -1,0 +1,19 @@
+# Local development: only MongoDB and Redis, published on localhost for `npm run dev`.
+# Usage: docker compose -f docker-compose.dev.yml up -d
+name: brightminds-dev
+
+services:
+  mongo:
+    image: mongo:8
+    ports:
+      - '127.0.0.1:27017:27017'
+    volumes:
+      - mongo-dev-data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '127.0.0.1:6379:6379'
+
+volumes:
+  mongo-dev-data:

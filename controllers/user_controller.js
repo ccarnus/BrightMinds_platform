@@ -1,1937 +1,607 @@
-const User = require('../models/user_model.js');
-const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
-const emailVerificator = require('../backend/email_verificator.js');
-const jwt = require('jsonwebtoken');
-const fs = require('fs');
-const Cast = require('../models/cast_model.js');
-const Article = require('../models/article_model.js');
-const { departmentNames } = require('../lists/departments.js');
-const { deleteFile } = require('./fileHelper.js');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
+const User = require('../models/user_model');
+const Cast = require('../models/cast_model');
+const Article = require('../models/article_model');
+const { departmentNames } = require('../lists/departments');
+const isValidEmail = require('../services/email_validator');
+const { sendMail } = require('../services/mailer');
+const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
+const { signToken } = require('../middleware/auth');
+const {
+  messagePage,
+  resetPasswordFormPage,
+  verificationEmail,
+  passwordResetEmail,
+} = require('../views/html');
+const {
+  HttpError,
+  assertObjectId,
+  badRequest,
+  notFound,
+  parseJsonField,
+  pick,
+  isNonEmptyString,
+  isValidObjectId,
+} = require('../utils/http');
 
-const EMAIL_PWD = process.env.EMAIL_PWD;
-const API_BASE_URL = 'https://api.brightmindsresearch.com'
+const BCRYPT_ROUNDS = 10;
+const MIN_PASSWORD_LENGTH = 4;
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const UNIVERSITY_ROLES = ['Professor', 'PhD Student', 'Researcher'];
+const OBJECTIVE_TARGETS = {
+  Follower: 5,
+  Explorer: 10,
+  'Deep Learner': 20,
+  Researcher: 30,
+  Career: 50,
+};
+const DEFAULT_OBJECTIVE = 'Explorer';
+// Fields a user may change on their own profile via PUT /user/:id.
+const SELF_EDITABLE_FIELDS = [
+  'username',
+  'role',
+  'university',
+  'evaluation_list',
+  'preferences',
+  'tracking',
+  'castPublications',
+  'articlePublications',
+];
+const PUBLIC_LIST_FIELDS =
+  '_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences tracking castPublications articlePublications university isVerified';
+
+const isObjective = (value) => typeof value === 'string' && Object.hasOwn(OBJECTIVE_TARGETS, value);
+
+const getTargetValue = (objective) =>
+  isObjective(objective) ? OBJECTIVE_TARGETS[objective] : OBJECTIVE_TARGETS[DEFAULT_OBJECTIVE];
+
+const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
 const normalizeContentType = (value) => {
-    if (!value) {
-        return null;
-    }
-    const type = String(value).toLowerCase();
-    if (type === 'cast' || type === 'article') {
-        return type;
-    }
-    return null;
+  const type = value ? String(value).toLowerCase() : null;
+  return type === 'cast' || type === 'article' ? type : null;
 };
 
-const resolveBookmarkInput = (reqBody = {}) => {
-    const contentId =
-        reqBody.contentId ||
-        reqBody.contentid ||
-        reqBody.castId ||
-        reqBody.articleId ||
-        null;
+const normalizeBoolean = (value) => ['1', 'true', 'yes'].includes(String(value).toLowerCase());
 
-    let type = normalizeContentType(reqBody.type || reqBody.contentType);
-    if (!type) {
-        if (reqBody.castId) {
-            type = 'cast';
-        } else if (reqBody.articleId) {
-            type = 'article';
-        }
-    }
-
-    return {
-        contentId: contentId ? String(contentId).trim() : null,
-        type,
-    };
+/** Accepts the different payload shapes clients have used for bookmarks. */
+const resolveBookmarkInput = (body = {}) => {
+  const contentId = body.contentId || body.contentid || body.castId || body.articleId || null;
+  let type = normalizeContentType(body.type || body.contentType);
+  if (!type && body.castId) type = 'cast';
+  if (!type && body.articleId) type = 'article';
+  return { contentId: contentId ? String(contentId).trim() : null, type };
 };
 
-const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
-
-const normalizeBoolean = (value) => {
-    if (value === true) return true;
-    if (value === false) return false;
-    if (value === undefined || value === null) return false;
-    const normalized = String(value).toLowerCase();
-    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+const findUserOr404 = async (id, projection) => {
+  assertObjectId(id);
+  const user = await User.findById(id, projection);
+  if (!user) throw notFound('User not found.');
+  return user;
 };
 
-const getTargetValue = (objective) => {
-    switch (objective) {
-        case 'Follower':
-            return 5;
-        case 'Explorer':
-            return 10;
-        case 'Deep Learner':
-            return 20;
-        case 'Researcher':
-            return 30;
-        case 'Career':
-            return 50;
-        default:
-            return 10;
-    }
-};
-
-exports.signup = async (req, res, next) => {
-    req.body.user = JSON.parse(req.body.user);
-
-    // Normalize the email to lowercase
-    req.body.user.email = req.body.user.email.toLowerCase();
-    
-    // Validate email domain
-    if (!emailVerificator(req.body.user.email)) {
-        return res.status(400).json({
-            error: "The email domain name is not a valid one."
-        });
-    }
-
-    try {
-        // Hash the password
-        const hash = await bcrypt.hash(req.body.user.password, 10);
-
-        // Generate the verification token
-        const token = crypto.randomBytes(16).toString('hex');
-        const url = "https://api.brightmindsresearch.com";
-
-        // Prepare the user data
-        const userData = {
-            email: req.body.user.email,
-            password: hash,
-            username: req.body.user.username,
-            role: req.body.user.role,
-            profilePictureUrl: url + '/backend/media/profile_pictures/' + req.file.filename,
-            verificationToken: token,
-            tracking: {
-                objective: req.body.user.objective || 'Explorer',
-                target: getTargetValue(req.body.user.objective || 'Explorer')
-            }
-        };
-
-        if (['Professor', 'PhD Student', 'Researcher'].includes(req.body.user.role)) {
-            userData.university = req.body.user.university;
-        }
-
-        // Configure nodemailer
-        const transporter = nodemailer.createTransport({
-            service: 'Gmail',
-            auth: {
-                user: 'clement.carnus@brightmindsresearch.com',
-                pass: EMAIL_PWD
-            }
-        });
-
-        const mailOptions = {
-            from: 'clement.carnus@brightmindsresearch.com',
-            to: req.body.user.email,
-            subject: 'Account Verification - BrightMinds Research',
-            html: `
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>BrightMinds Research - Email Confirmation</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #f1f1f1;
-                    }
-
-                    .email-container {
-                        max-width: 600px;
-                        margin: 0 auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                    }
-
-                    .email-container .logo {
-                        text-align: center;
-                        margin-bottom: 20px;
-                    }
-
-                    .email-container .logo img {
-                        max-width: 230px;
-                    }
-
-                    .email-container h2 {
-                        text-align: center;
-                        color: #00407A;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .email-container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        text-align: center;
-                        color: #f1f1f1;
-                    }
-
-                    .email-container .button-container {
-                        text-align: center;
-                        margin: 30px 0;
-                    }
-
-                    .email-container .button-container a {
-                        background-color: #00407A;
-                        color: #f1f1f1;
-                        padding: 12px 24px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-size: 16px;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .email-container .footer {
-                        text-align: center;
-                        margin-top: 20px;
-                        margin-bottom: 20px;
-                    }
-
-                    .email-container .footer img {
-                        max-width: 100px;
-                    }
-
-                    .email-container .footer p {
-                        font-size: 12px;
-                        line-height: 1.5;
-                        text-align: center;
-                        color: #f1f1f1;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="email-container">
-                    <div class="logo">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                    </div>
-                    <h2>Welcome!</h2>
-                    <p>Thank you for signing up with us. To complete your registration, please confirm your email address by clicking the button below.</p>
-                    <div class="button-container">
-                        <a href="${API_BASE_URL}/user/confirmation/${token}">Verify Email</a>
-                    </div>
-                    <p>If you did not create an account with us, please ignore this email.</p>
-                    <div class="footer">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_icon.png" alt="BrightMinds Footer">
-                        <p>&copy; 2024 BrightMinds Research LLC. All rights reserved.</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            `
-        };
-
-        await transporter.sendMail(mailOptions);
-
-        const user = new User(userData);
-        await user.save();
-
-        res.status(201).json({ response: 'User created. Please check your email to verify your account.' });
-
-    } catch (error) {
-        // Handle errors in email sending or user creation
-        console.error('Error during signup:', error);
-
-        // Return a meaningful error message
-        res.status(500).json({
-            error: 'An error occurred during signup. Please try again later.'
-        });
-    }
-};
-
-
-exports.confirmation = (req, res, next) => {
-    User.findOne({ verificationToken: req.params.token }, (err, user) => {
-        if (!user) {
-            return res.status(400).send(`
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Verification Failed - BrightMinds Research</title>
-                    <style>
-                        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                        
-                        body {
-                            margin: 0;
-                            padding: 0;
-                            font-family: 'Montserrat', sans-serif;
-                            background-color: #1c1c1c;
-                            color: #1c1c1c;
-                        }
-
-                        .container {
-                            max-width: 600px;
-                            margin: 0 auto;
-                            background-color: #1c1c1c;
-                            border: 1px solid #1c1c1c;
-                            border-radius: 8px;
-                            padding: 20px;
-                            text-align: center;
-                        }
-
-                        .container .logo {
-                            margin-bottom: 20px;
-                        }
-
-                        .container .logo img {
-                            max-width: 230px;
-                        }
-
-                        .container h2 {
-                            color: #cc0000;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-
-                        .container p {
-                            font-size: 16px;
-                            line-height: 1.5;
-                            color: #f1f1f1;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="logo">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                        </div>
-                        <h2>Verification Failed</h2>
-                        <p>We were unable to find a user for this token.</p>
-                        <p>Please check the link or contact support.</p>
-                    </div>
-                </body>
-                </html>
-            `);
-        }
-        if (user.isVerified) {
-            return res.status(400).send(`
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Already Verified - BrightMinds Research</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                    
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #1c1c1c;
-                    }
-
-                    .container {
-                        max-width: 600px;
-                        margin: 0 auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                        text-align: center;
-                    }
-
-                    .container .logo {
-                        margin-bottom: 20px;
-                    }
-
-                    .container .logo img {
-                        max-width: 230px;
-                    }
-
-                    .container h2 {
-                        color: #00407A;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-
-                    .container a {
-                        color: #00407A;
-                        text-decoration: none;
-                        font-weight: bold;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="logo">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                    </div>
-                    <h2>Already Verified</h2>
-                    <p>This user has already been verified.</p>
-                    <a href="https://www.brightmindsresearch.com/">Visit our Site</a>
-                </div>
-            </body>
-            </html>
-            `);
-        }
-
-        user.isVerified = true;
-
-        user.save((err) => {
-            if (err) { return res.status(500).send({ msg: err.message }); }
-            res.status(200).send(`
-                <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Verification Successful - BrightMinds Research</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                    
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #1c1c1c;
-                    }
-
-                    .container {
-                        max-width: 600px;
-                        margin: 0 auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                        text-align: center;
-                    }
-
-                    .container .logo {
-                        margin-bottom: 20px;
-                    }
-
-                    .container .logo img {
-                        max-width: 230px;
-                    }
-
-                    .container h2 {
-                        color: #00407A;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-
-                    .container a {
-                        background-color: #00407A;
-                        color: #f1f1f1;
-                        padding: 12px 24px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-size: 16px;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="logo">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                    </div>
-                    <h2>Verification Successful!</h2>
-                    <p>Your account has been verified. You can now log in.</p>
-                    <a href="https://www.brightmindsresearch.com/">Visit our Site</a>
-                </div>
-            </body>
-            </html>
-            `);
-        });
-    });
-};
-
-
-exports.login = (req, res, next) => {
-    User.findOne({email: req.body.email}).then(
-        (user) => {
-            if(!user) {
-                return res.status(401).json({
-                    response: 'user not found.'
-                });
-            }
-            bcrypt.compare(req.body.password,user.password).then(
-                (valid) => {
-                    if(!valid) {
-                        return res.status(401).json({
-                            response: 'incorrect password'
-                        });
-                    }
-                    const token = jwt.sign(
-                        {userId: user._id},
-                        'RANDOM_TOKEN_SECRET',
-                        {expiresIn: '24h'});
-                    res.status(200).json({
-                        userId: user._id,
-                        email: user.email,
-                        token: token
-                    });
-                }
-            ).catch((error) => {
-                res.status(500).json({
-                    error: error
-                });
-                console.log(error);
-            })
-        }
-    ).catch(
-        (error) => {
-            res.status(400).json({
-                error : error
-            });
-            console.log(error);
-        }
+/** HTML endpoints render an error page instead of the JSON error handler output. */
+const htmlRoute = (handler) => async (req, res) => {
+  try {
+    await handler(req, res);
+  } catch (error) {
+    console.error(`Error on ${req.method} ${req.originalUrl}:`, error);
+    res.status(500).send(
+      messagePage({
+        title: 'Server Error',
+        paragraphs: ['Sorry, something went wrong. Please try again later.'],
+        error: true,
+      })
     );
+  }
 };
 
-exports.getAllUser = async (req, res, next) => {
-    try {
-      const users = await User.find()
-        .select('_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences tracking castPublications articlePublications university verificationToken isVerified'); 
-  
-      res.status(200).json(users);
-    } catch (error) {
-      res.status(500).json({ error: 'An error occurred.' });
-    }
-  };
+// ---------------------------------------------------------------- Account
 
-  exports.getOneUser = async (req, res, next) => {
-    try {
-      const user = await User.findById(req.params.id);
-      console.log(user.tracking);
-  
-      if (!user) {
-        return res.status(404).json({ message: 'User not found.' });
-      }
-  
-      const userObject = {
-        _id: user._id,
-        email: user.email,
-        username: user.username,
-        role: user.role,
-        university: user.university,
-        profilePictureUrl: user.profilePictureUrl,
-        evaluation_list: user.evaluation_list,
-        bookmarkedcontent: user.bookmarkedcontent,
-        preferences: user.preferences,
-        tracking: user.tracking,
-        castPublications: user.castPublications,
-        articlePublications: user.articlePublications,
-        isVerified : user.isVerified,
-        verificationToken: user.verificationToken,
-      };
-  
-      res.status(200).json(userObject);
-    } catch (error) {
-      res.status(500).json({ error: 'Internal server error' });
-    }
+/** Multipart: `image` file + `user` JSON field. Sends a verification email. */
+exports.signup = async (req, res) => {
+  if (!req.file) throw badRequest('A profile picture is required (field "image").');
+  const data = parseJsonField(req.body, 'user');
+  const email = normalizeEmail(data.email);
+  if (!isValidEmail(email)) throw badRequest('The email domain name is not a valid one.');
+  if (!isNonEmptyString(data.password)) throw badRequest('Password is required.');
+  if (await User.exists({ email })) {
+    throw new HttpError(409, 'An account with this email already exists.');
+  }
+
+  const objective = isObjective(data.objective) ? data.objective : DEFAULT_OBJECTIVE;
+  const user = new User({
+    email,
+    password: await bcrypt.hash(data.password, BCRYPT_ROUNDS),
+    username: data.username,
+    role: data.role,
+    profilePictureUrl: mediaUrl(MEDIA_DIRS.profilePictures, req.file.filename),
+    verificationToken: crypto.randomBytes(16).toString('hex'),
+    tracking: { objective, target: getTargetValue(objective) },
+  });
+  if (UNIVERSITY_ROLES.includes(data.role)) {
+    user.university = data.university;
+  }
+  await user.save();
+
+  try {
+    await sendMail({
+      to: email,
+      subject: 'Account Verification - BrightMinds Research',
+      html: verificationEmail(user.verificationToken),
+    });
+  } catch (error) {
+    console.error('Error sending verification email:', error);
+    await User.deleteOne({ _id: user._id });
+    throw new HttpError(500, 'An error occurred during signup. Please try again later.');
+  }
+
+  res
+    .status(201)
+    .json({ response: 'User created. Please check your email to verify your account.' });
 };
 
-exports.updateOneUser = async (req, res, next) => {
-    try {
-        const userId = req.params.id;
+exports.confirmation = htmlRoute(async (req, res) => {
+  const user = await User.findOne({ verificationToken: String(req.params.token) });
+  if (!user) {
+    return res.status(400).send(
+      messagePage({
+        title: 'Verification Failed',
+        paragraphs: [
+          'We were unable to find a user for this token.',
+          'Please check the link or contact support.',
+        ],
+        error: true,
+      })
+    );
+  }
+  if (user.isVerified) {
+    return res.status(400).send(
+      messagePage({
+        title: 'Already Verified',
+        paragraphs: ['This user has already been verified.'],
+      })
+    );
+  }
+  user.isVerified = true;
+  await user.save();
+  return res.status(200).send(
+    messagePage({
+      title: 'Verification Successful',
+      heading: 'Verification Successful!',
+      paragraphs: ['Your account has been verified. You can now log in.'],
+    })
+  );
+});
 
-        // Find the user by ID
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        // Check if there's a new profile picture in the request
-        if (req.file) {
-            // Parse the user data from the request body
-            // Assuming the user data is sent as a JSON string under 'user' key
-            req.body.user = req.body.user ? JSON.parse(req.body.user) : {};
-
-            // Extract the old profile picture filename
-            const oldImageUrl = user.profilePictureUrl;
-            const oldImageFilename = oldImageUrl
-                ? oldImageUrl.split('/backend/media/profile_pictures/')[1]
-                : null;
-
-            // Define the path to the old image
-            const oldImagePath = oldImageFilename
-                ? `./backend/media/profile_pictures/${oldImageFilename}`
-                : null;
-
-            // Delete the old image if it exists
-            if (oldImagePath) {
-                try {
-                    await deleteFile(oldImagePath);
-                } catch (err) {
-                    // If deletion fails, respond with an error
-                    return res.status(500).json({ error: 'Failed to delete old profile picture.' });
-                }
-            }
-
-            // Update the profilePictureUrl with the new image
-            const url = "https://api.brightmindsresearch.com";
-            user.profilePictureUrl = `${url}/backend/media/profile_pictures/${req.file.filename}`;
-        } else {
-            // If no new image, ensure req.body.user is parsed if provided
-            req.body.user = req.body.user ? JSON.parse(req.body.user) : {};
-        }
-
-        // Update other user fields
-        // You can choose to whitelist specific fields to prevent unwanted updates
-        const allowedFields = [
-            'email',
-            'username',
-            'role',
-            'evaluation_list',
-            'preferences',
-            'tracking',
-            'castPublications',
-            'articlePublications',
-            'university',
-        ];
-
-        allowedFields.forEach(field => {
-            if (req.body.user[field] !== undefined) {
-                user[field] = req.body.user[field];
-            }
-        });
-
-        // Optional: Validate department if it's being updated
-        if (req.body.user.department) {
-            if (!departmentNames.includes(req.body.user.department)) {
-                return res.status(400).json({ error: 'Invalid department.' });
-            }
-            user.department = req.body.user.department;
-        }
-
-        // Save the updated user
-        await user.save();
-
-        res.status(200).json({ message: 'User updated successfully.', user });
-    } catch (error) {
-        console.error('Error updating user:', error);
-        res.status(500).json({ error: 'Internal server error.' });
-    }
+exports.login = async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const { password } = req.body;
+  if (!email || typeof password !== 'string') {
+    throw badRequest('Email and password are required.');
+  }
+  const user = await User.findOne({ email });
+  if (!user) {
+    return res.status(401).json({ response: 'user not found.' });
+  }
+  if (!(await bcrypt.compare(password, user.password))) {
+    return res.status(401).json({ response: 'incorrect password' });
+  }
+  return res.status(200).json({ userId: user._id, email: user.email, token: signToken(user._id) });
 };
 
-exports.deleteOneUser = (req, res, next) => {
-    User.findOne({_id:req.params.id}).then(
-        (user) => {
-            const filename = user.profilePictureUrl.split('/backend/media/profile_pictures/')[1];
-            fs.unlink('./backend/media/profile_pictures/' + filename, () => {
-                User.deleteOne({_id: req.params.id}).then(
-                    () => {
-                        res.status(200).json({
-                            response: "user removed."
-                        });
-                    }
-                ).catch((error) => {
-                    res.status(404).json({
-                        error: error
-                    });
-                });
-            })
-        }
-    )
-}
-
-exports.updateUserAddContentToList = async (req, res, next) => {
-    const userId = req.params.id;
-    const contentId = String(req.body.contentId);
-    const type = req.body.type;
-
-    try {
-        // Determine the category of the content
-        let category;
-        if (type === 'cast') {
-            const cast = await Cast.findById(contentId);
-            if (!cast) {
-                return res.status(404).json({ message: 'Cast not found.' });
-            }
-            category = cast.department;
-        } else if (type === 'article') {
-            const article = await Article.findById(contentId);
-            if (!article) {
-                return res.status(404).json({ message: 'Article not found.' });
-            }
-            category = article.department;
-        } else {
-            return res.status(400).json({ message: 'Invalid content type.' });
-        }
-
-        // Build the evaluation object you want to add.
-        const newEvaluation = {
-            contentid: contentId,
-            type: type,
-            watched: true,
-            answered: false
-        };
-
-        // If the content already exists, update its status (no duplicates).
-        const updateExistingResult = await User.updateOne(
-            { _id: userId, "evaluation_list.contentid": contentId },
-            {
-                $set: {
-                    "evaluation_list.$.watched": true,
-                    "evaluation_list.$.type": type
-                }
-            }
-        );
-
-        if (updateExistingResult.matchedCount > 0) {
-            return res.status(200).json({ message: 'Content already in evaluation list.' });
-        }
-
-        // Add only if the content is not already present (protects against duplicates).
-        const addEvaluationResult = await User.updateOne(
-            { _id: userId, "evaluation_list.contentid": { $ne: contentId } },
-            { $push: { evaluation_list: newEvaluation } }
-        );
-
-        if (addEvaluationResult.matchedCount === 0) {
-            return res.status(200).json({ message: 'Content already in evaluation list.' });
-        }
-
-        // Update tracking history only when a new evaluation is added.
-        const historyUpdateResult = await User.updateOne(
-            { _id: userId, "tracking.history.category": category },
-            { $inc: { "tracking.history.$.count": 1 } }
-        );
-
-        if (historyUpdateResult.matchedCount === 0) {
-            await User.updateOne(
-                { _id: userId },
-                { $push: { "tracking.history": { category: category, count: 1 } } }
-            );
-        }
-
-        return res.status(200).json({ message: 'Content added to evaluation list and history updated.' });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ error: 'An error occurred.' });
-    }
+exports.getAllUser = async (req, res) => {
+  res.status(200).json(await User.find().select(PUBLIC_LIST_FIELDS));
 };
 
-
-exports.updateUserRemoveContentFromList = (req, res, next) => {
-    const userId = req.params.id;
-    const contentId = req.body.contentId;
-
-    User.findById(userId)
-        .then((user) => {
-            if (!user) {
-                return res.status(404).json({ message: 'User not found.' });
-            }
-
-            // Filter out the evaluation object with the specified castId
-            user.evaluation_list = user.evaluation_list.filter((evaluationObject) => {
-                return evaluationObject.contentid !== contentId;
-            });
-
-            return user.save();
-        })
-        .then(() => {
-            res.status(200).json({ message: 'Content removed from evaluation list.' });
-        })
-        .catch((error) => {
-            res.status(500).json({ error: 'An error occurred.' });
-        });
+exports.getOneUser = async (req, res) => {
+  res.status(200).json(await findUserOr404(req.params.id));
 };
 
-exports.getUserBookmarks = async (req, res, next) => {
-    const userId = req.params.id;
+/** Multipart or JSON: optional `image` file + `user` JSON field with the fields to change. */
+exports.updateOneUser = async (req, res) => {
+  const user = await findUserOr404(req.params.id);
+  const data = parseJsonField(req.body, 'user');
 
-    try {
-        const user = await User.findById(userId).lean();
+  if (data.email !== undefined) {
+    const email = normalizeEmail(data.email);
+    if (!isValidEmail(email)) throw badRequest('Invalid email.');
+    user.email = email;
+  }
+  Object.assign(user, pick(data, SELF_EDITABLE_FIELDS));
 
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
+  const previousPictureUrl = user.profilePictureUrl;
+  if (req.file) {
+    user.profilePictureUrl = mediaUrl(MEDIA_DIRS.profilePictures, req.file.filename);
+  }
+  await user.save();
+  if (req.file) {
+    await deleteMediaByUrl(previousPictureUrl, MEDIA_DIRS.profilePictures);
+  }
 
-        const bookmarks = Array.isArray(user.bookmarkedcontent) ? user.bookmarkedcontent : [];
-        const expand = normalizeBoolean(req.query.expand || req.query.includeContent);
-
-        if (!expand) {
-            return res.status(200).json(bookmarks);
-        }
-
-        const castIds = new Set();
-        const articleIds = new Set();
-        const unknownIds = new Set();
-
-        bookmarks.forEach((bookmark) => {
-            const contentId = bookmark?.contentid ? String(bookmark.contentid).trim() : null;
-            if (!contentId) {
-                return;
-            }
-            const type = normalizeContentType(bookmark.type);
-            if (type === 'cast') {
-                castIds.add(contentId);
-            } else if (type === 'article') {
-                articleIds.add(contentId);
-            } else {
-                unknownIds.add(contentId);
-            }
-        });
-
-        const castQueryIds = [...new Set([...castIds, ...unknownIds])].filter(isValidObjectId);
-        const articleQueryIds = [...new Set([...articleIds, ...unknownIds])].filter(isValidObjectId);
-
-        const [casts, articles] = await Promise.all([
-            castQueryIds.length ? Cast.find({ _id: { $in: castQueryIds } }).lean() : [],
-            articleQueryIds.length ? Article.find({ _id: { $in: articleQueryIds } }).lean() : [],
-        ]);
-
-        const castMap = new Map(casts.map((cast) => [String(cast._id), cast]));
-        const articleMap = new Map(articles.map((article) => [String(article._id), article]));
-
-        const expandedBookmarks = bookmarks.map((bookmark) => {
-            const contentId = bookmark?.contentid ? String(bookmark.contentid).trim() : null;
-            if (!contentId) {
-                return {
-                    contentid: null,
-                    type: null,
-                    bookmarkedAt: bookmark?.bookmarkedAt || null,
-                    content: null,
-                };
-            }
-
-            let type = normalizeContentType(bookmark.type);
-            let content = null;
-
-            if (type === 'cast') {
-                content = castMap.get(contentId) || null;
-            } else if (type === 'article') {
-                content = articleMap.get(contentId) || null;
-            } else if (castMap.has(contentId)) {
-                type = 'cast';
-                content = castMap.get(contentId);
-            } else if (articleMap.has(contentId)) {
-                type = 'article';
-                content = articleMap.get(contentId);
-            }
-
-            return {
-                contentid: contentId,
-                type,
-                bookmarkedAt: bookmark?.bookmarkedAt || null,
-                content,
-            };
-        });
-
-        return res.status(200).json(expandedBookmarks);
-    } catch (error) {
-        res.status(500).json({ error: 'An error occurred.' });
-    }
+  res.status(200).json({ message: 'User updated successfully.', user });
 };
 
-exports.addUserBookmark = async (req, res, next) => {
-    const userId = req.params.id;
-    const { contentId, type } = resolveBookmarkInput(req.body);
-    const rawType = req.body?.type || req.body?.contentType;
-
-    try {
-        if (rawType && !normalizeContentType(rawType)) {
-            return res.status(400).json({ message: 'Invalid content type.' });
-        }
-
-        if (!contentId) {
-            return res.status(400).json({ message: 'contentId is required.' });
-        }
-
-        if (!isValidObjectId(contentId)) {
-            return res.status(400).json({ message: 'Invalid contentId.' });
-        }
-
-        const userExists = await User.exists({ _id: userId });
-        if (!userExists) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        let resolvedType = normalizeContentType(type);
-        let castFound = null;
-        let articleFound = null;
-        if (!resolvedType) {
-            const [cast, article] = await Promise.all([
-                Cast.findById(contentId).select('_id').lean(),
-                Article.findById(contentId).select('_id').lean(),
-            ]);
-            castFound = !!cast;
-            articleFound = !!article;
-            if (cast && article) {
-                return res.status(400).json({ message: 'Content type is required.' });
-            }
-            if (!cast && !article) {
-                return res.status(404).json({ message: 'Content not found.' });
-            }
-            resolvedType = cast ? 'cast' : 'article';
-        }
-
-        if (resolvedType === 'cast') {
-            if (castFound === null) {
-                castFound = await Cast.exists({ _id: contentId });
-            }
-            if (!castFound) {
-                return res.status(404).json({ message: 'Cast not found.' });
-            }
-        } else if (resolvedType === 'article') {
-            if (articleFound === null) {
-                articleFound = await Article.exists({ _id: contentId });
-            }
-            if (!articleFound) {
-                return res.status(404).json({ message: 'Article not found.' });
-            }
-        } else {
-            return res.status(400).json({ message: 'Invalid content type.' });
-        }
-
-        const addBookmarkResult = await User.updateOne(
-            { _id: userId, "bookmarkedcontent.contentid": { $ne: contentId } },
-            {
-                $push: {
-                    bookmarkedcontent: {
-                        contentid: contentId,
-                        type: resolvedType,
-                        bookmarkedAt: new Date(),
-                    },
-                },
-            }
-        );
-
-        if (addBookmarkResult.modifiedCount === 0) {
-            await User.updateOne(
-                {
-                    _id: userId,
-                    "bookmarkedcontent.contentid": contentId,
-                    "bookmarkedcontent.type": { $exists: false },
-                },
-                {
-                    $set: {
-                        "bookmarkedcontent.$.type": resolvedType,
-                        "bookmarkedcontent.$.bookmarkedAt": new Date(),
-                    },
-                }
-            );
-
-            return res.status(400).json({ message: 'Element is already bookmarked.' });
-        }
-
-        res.status(201).json({
-            message: 'Element bookmarked.',
-            bookmark: {
-                contentid: contentId,
-                type: resolvedType,
-            },
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'An error occurred.' });
-    }
+exports.deleteOneUser = async (req, res) => {
+  const user = await findUserOr404(req.params.id);
+  await deleteMediaByUrl(user.profilePictureUrl, MEDIA_DIRS.profilePictures);
+  await User.deleteOne({ _id: user._id });
+  res.status(200).json({ response: 'user removed.' });
 };
 
-exports.removeUserBookmark = async (req, res, next) => {
-    const userId = req.params.id;
-    const contentId =
-        req.params.castId ||
-        req.params.contentId ||
-        req.body?.contentId ||
-        null;
-
-    try {
-        if (!contentId) {
-            return res.status(400).json({ message: 'contentId is required.' });
-        }
-
-        const userExists = await User.exists({ _id: userId });
-        if (!userExists) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        const rawType = req.query.type || req.query.contentType || req.body?.type || req.body?.contentType;
-        if (rawType && !normalizeContentType(rawType)) {
-            return res.status(400).json({ message: 'Invalid content type.' });
-        }
-        const normalizedType = normalizeContentType(rawType);
-
-        const pullFilter = normalizedType
-            ? { contentid: String(contentId), type: normalizedType }
-            : { contentid: String(contentId) };
-
-        const removeResult = await User.updateOne(
-            { _id: userId },
-            { $pull: { bookmarkedcontent: pullFilter } }
-        );
-
-        if (removeResult.modifiedCount === 0) {
-            return res.status(404).json({ message: 'Bookmark not found.' });
-        }
-
-        res.status(200).json({ message: 'Element removed from bookmarks.' });
-    } catch (error) {
-        res.status(500).json({ error: 'An error occurred.' });
-    }
-};
-
-exports.markContentAsAnswered = async (req, res, next) => {
-    const userId = req.params.id;
-    const contentId = req.body.contentId;
-
-    User.findById(userId)
-        .then((user) => {
-            if (!user) {
-                return res.status(404).json({ message: 'User not found.' });
-            }
-
-            // Find the specific evaluation in the user's "evaluation_list" array
-            const evaluation = user.evaluation_list.find(item => item.contentid === contentId);
-
-            if (!evaluation) {
-                return res.status(404).json({ message: 'Evaluation not found.' });
-            }
-
-            // Update the "answered" field to true
-            evaluation.answered = true;
-
-            // Save the user object with the updated evaluation
-            return user.save();
-        })
-        .then(() => {
-            res.status(200).json({ message: 'Content marked as answered.' });
-        })
-        .catch((error) => {
-            res.status(500).json({ error: 'An error occurred.' });
-        });
-}
-
-exports.getSuggestedForYou = async (req, res, next) => {
-    try {
-        const user = await User.findById(req.params.id);
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        if (!user.preferences || user.preferences.length === 0) {
-            return res.status(404).json({ message: 'No preferences set for user.' });
-        }
-
-        // Step 1: Fetch user preferences
-        const preferences = user.preferences;
-
-        // Step 2: Fetch casts for each preference category
-        const castsByCategory = await Promise.all(preferences.map(async (pref) => {
-            const casts = await Cast.find({ department: pref.category }).sort({ _id: 1 }).lean();
-            return casts.map(cast => ({ ...cast, weight: pref.weight }));
-        }));
-
-        // Step 3: Flatten the array and sort the casts by weight
-        const allCasts = castsByCategory.flat();
-        allCasts.sort((a, b) => b.weight - a.weight);
-
-        // Removing duplicates using a Set
-        const uniqueCasts = [];
-        const seenCasts = new Set();
-
-        for (const cast of allCasts) {
-            if (!seenCasts.has(cast._id.toString())) {
-                uniqueCasts.push(cast);
-                seenCasts.add(cast._id.toString());
-            }
-        }
-
-        // Removing the weight property for the final response
-        const finalCasts = uniqueCasts.map(({ weight, ...rest }) => rest);
-
-        res.status(200).json(finalCasts);
-    } catch (error) {
-        console.error('Error fetching suggested casts:', error);
-        res.status(500).json({ error: 'An error occurred.' });
-    }
-};
-
-exports.getUserPreferences = (req, res, next) => {
-    User.findById(req.params.id)
-        .then(user => {
-            if (!user) {
-                return res.status(404).json({ message: 'User not found.' });
-            }
-
-            res.status(200).json({ preferences: user.preferences });
-        })
-        .catch(error => {
-            res.status(500).json({ error: 'An error occurred while fetching user preferences.' });
-        });
-};
-
-exports.updateUserPreferences = async (req, res, next) => {
-    const userId = req.params.id;
-    const { category, modification } = req.body;
-
-    // Verification for 'modification' field
-    if (!modification || (modification !== 'positive' && modification !== 'negative')) {
-        return res.status(400).json({ message: 'Invalid modification type. Must be either "positive" or "negative".' });
-    }
-
-    // Verification for 'category' field
-    if (!departmentNames.includes(category)) {
-        return res.status(400).json({ message: 'Invalid category. Must be one of the predefined departments.' });
-    }
-
-    try {
-        const user = await User.findById(userId);
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        // Check if the category already exists in user preferences
-        let existingCategory = user.preferences.find(pref => pref.category === category);
-
-        if (existingCategory) {
-            // Update the count based on the modification type
-            existingCategory.count += modification === 'positive' ? 1 : -1;
-            if (existingCategory.count < 0) existingCategory.count = 0; // Ensure count does not go negative
-        } else if (modification === 'positive') {
-            // If category doesn't exist and modification is positive, create new category with count 1
-            user.preferences.push({ category: category, weight: 0, count: 1 });
-        } // If category doesn't exist and modification is negative, ignore
-
-        // Calculate the total count of all preferences
-        const totalCount = user.preferences.reduce((acc, pref) => acc + pref.count, 0);
-
-        // Update the weights based on the count
-        user.preferences.forEach(pref => {
-            if (totalCount > 0) {
-                pref.weight = (pref.count / totalCount) * 100;
-            } else {
-                pref.weight = 0;
-            }
-        });
-
-        // Save the updated user
-        await user.save();
-
-        res.status(200).json({ message: 'User preferences updated.', preferences: user.preferences });
-    } catch (error) {
-        res.status(500).json({ error: 'An error occurred.' });
-    }
-};
-
-
-exports.updateUserTracking = async (req, res) => {
-    const userId = req.params.id;
-    const { objective } = req.body;
-
-    // Define the valid objectives
-    const validObjectives = ['Follower', 'Explorer', 'Deep Learner', 'Career', 'Researcher'];
-
-    try {
-        // Validate the objective value
-        if (!validObjectives.includes(objective)) {
-            return res.status(400).json({ message: 'Invalid objective value. Must be one of Follower, Explorer, Deep Learner, Career, or Researcher.' });
-        }
-
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        // Set the objective and target fields
-        user.tracking.objective = objective;
-        user.tracking.target = getTargetValue(objective); // Set or update the target field
-
-        await user.save();
-        res.status(200).json({ message: 'Tracking updated successfully.', tracking: user.tracking });
-    } catch (error) {
-        res.status(500).json({ error: 'An error occurred.' });
-    }
-};
-
-
-exports.getUserTracking = async (req, res) => {
-    const userId = req.params.id;
-
-    try {
-        const user = await User.findById(userId).select('tracking');
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        res.status(200).json({ tracking: user.tracking, target: user.tracking.target});
-    } catch (error) {
-        res.status(500).json({ error: 'An error occurred.' });
-    }
-};
+// ---------------------------------------------------------------- Password reset
 
 exports.requestPasswordResetEmail = async (req, res) => {
-    try {
-      const { email } = req.body;
-      const user = await User.findOne({ email });
-  
-      // If user doesn't exist or is not verified, handle accordingly:
-      if (!user) {
-        return res.status(404).json({ message: 'No user found with that email address.' });
-      }
-      if (!user.isVerified) {
-        return res.status(400).json({ message: 'Your email has not been verified.' });
-      }
-  
-      // Generate reset token
-      const token = crypto.randomBytes(20).toString('hex');
-  
-      // Set token and expiration (1 hour from now, for example)
-      user.resetPasswordToken = token;
-      user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
-      await user.save();
-  
-      // Send the reset link via email
-      const transporter = nodemailer.createTransport({
-        service: 'Gmail',
-        auth: {
-          user: 'clement.carnus@brightmindsresearch.com',
-          pass: EMAIL_PWD,
-        },
-      });
-  
-      // You can customize your email's text or HTML
-      const mailOptions = {
-        from: 'clement.carnus@brightmindsresearch.com',
-        to: user.email,
-        subject: 'Password Reset - BrightMinds Research',
-        html: `
-          <p>Hello ${user.username},</p>
-          <p>You requested a password reset for your BrightMinds Research account.</p>
-          <p>Please click the link below to set a new password (valid for 1 hour):</p>
-          <p><a href="${API_BASE_URL}/user/reset-password/${token}">
-            Reset Your Password
-          </a></p>
-          <p>If you did not request this, please ignore this email.</p>
-        `,
-      };
-  
-      await transporter.sendMail(mailOptions);
-  
-      res.status(200).json({ message: 'Password reset link sent to your email.' });
-    } catch (error) {
-      console.error('Error sending reset email:', error);
-      res.status(500).json({ message: 'Error sending reset email.' });
-    }
-  };  
+  const user = await User.findOne({ email: normalizeEmail(req.body.email) });
+  if (!user) throw notFound('No user found with that email address.');
+  if (!user.isVerified) throw badRequest('Your email has not been verified.');
 
+  user.resetPasswordToken = crypto.randomBytes(20).toString('hex');
+  user.resetPasswordExpires = Date.now() + RESET_TOKEN_TTL_MS;
+  await user.save();
 
-  exports.showResetPasswordForm = async (req, res) => {
-    try {
-        const { token } = req.params;
-        // Ensure token corresponds to a valid user and is not expired
-        const user = await User.findOne({
-            resetPasswordToken: token,
-            resetPasswordExpires: { $gt: Date.now() }, // $gt => must be greater than current time
-        });
-
-        if (!user) {
-            return res.status(400).send(`
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8" />
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                    <title>Password Reset - BrightMinds Research</title>
-                    <style>
-                        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                        body {
-                            margin: 0;
-                            padding: 0;
-                            font-family: 'Montserrat', sans-serif;
-                            background-color: #1c1c1c;
-                            color: #f1f1f1;
-                        }
-                        .email-container {
-                            max-width: 600px;
-                            margin: 50px auto;
-                            background-color: #1c1c1c;
-                            border: 1px solid #1c1c1c;
-                            border-radius: 8px;
-                            padding: 20px;
-                            text-align: center;
-                        }
-                        .email-container h2 {
-                            color: #cc0000;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                        .email-container p {
-                            font-size: 16px;
-                            line-height: 1.5;
-                            color: #f1f1f1;
-                        }
-                        a {
-                            color: #00407A;
-                            text-decoration: none;
-                            font-weight: bold;
-                        }
-                        .button-container {
-                            margin-top: 20px;
-                        }
-                        .button-container a {
-                            background-color: #00407A;
-                            color: #f1f1f1;
-                            padding: 12px 24px;
-                            text-decoration: none;
-                            border-radius: 5px;
-                            font-size: 16px;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="email-container">
-                        <h2>Invalid or Expired Link</h2>
-                        <p>The password reset link is invalid or has expired.</p>
-                        <div class="button-container">
-                            <a href="https://www.brightmindsresearch.com/">Visit our Site</a>
-                        </div>
-                    </div>
-                </body>
-                </html>
-            `);
-        }
-
-        return res.status(200).send(`
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                <title>Reset Your Password - BrightMinds Research</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                    
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #f1f1f1;
-                    }
-
-                    .email-container {
-                        max-width: 600px;
-                        margin: 50px auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                        text-align: center;
-                    }
-
-                    .email-container .logo {
-                        margin-bottom: 20px;
-                    }
-
-                    .email-container .logo img {
-                        max-width: 230px;
-                    }
-
-                    .email-container h2 {
-                        color: #00407A;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .email-container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-
-                    .password-form {
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        margin-top: 20px;
-                    }
-
-                    .password-form label {
-                        margin: 10px 0 5px;
-                        font-size: 14px;
-                        text-align: left;
-                        width: 100%;
-                        max-width: 400px;
-                    }
-
-                    .password-form input {
-                        padding: 10px;
-                        width: 100%;
-                        max-width: 400px;
-                        border: 1px solid #ccc;
-                        border-radius: 5px;
-                        font-size: 16px;
-                    }
-
-                    .password-form button {
-                        margin-top: 20px;
-                        padding: 12px 24px;
-                        background-color: #00407A;
-                        color: #f1f1f1;
-                        border: none;
-                        border-radius: 5px;
-                        font-size: 16px;
-                        cursor: pointer;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .password-form button:hover {
-                        background-color: #00306B;
-                    }
-
-                    .error-message {
-                        color: #cc0000;
-                        margin-top: 10px;
-                        font-size: 14px;
-                    }
-
-                    .footer {
-                        text-align: center;
-                        margin-top: 30px;
-                        margin-bottom: 20px;
-                    }
-
-                    .footer img {
-                        max-width: 100px;
-                    }
-
-                    .footer p {
-                        font-size: 12px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-                </style>
-                <script>
-                    function validateForm(event) {
-                        const password = document.getElementById('password').value;
-                        const confirmPassword = document.getElementById('confirmPassword').value;
-                        const errorMessage = document.getElementById('error-message');
-
-                        if (password !== confirmPassword) {
-                            event.preventDefault();
-                            errorMessage.textContent = 'Passwords do not match.';
-                            return false;
-                        }
-
-                        if (password.length < 4) {
-                            event.preventDefault();
-                            errorMessage.textContent = 'Password must be at least 4 characters long.';
-                            return false;
-                        }
-
-                        // Additional validation can be added here
-
-                        return true;
-                    }
-                </script>
-            </head>
-            <body>
-                <div class="email-container">
-                    <div class="logo">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                    </div>
-                    <h2>Reset Your Password</h2>
-                    <p>Please enter your new password below.</p>
-                    <form class="password-form" action="/user/reset-password/${token}" method="POST" onsubmit="validateForm(event)">
-                        <label for="password">New Password:</label>
-                        <input type="password" id="password" name="password" required />
-
-                        <label for="confirmPassword">Confirm New Password:</label>
-                        <input type="password" id="confirmPassword" name="confirmPassword" required />
-
-                        <div id="error-message" class="error-message"></div>
-
-                        <button type="submit">Reset Password</button>
-                    </form>
-                    <div class="footer">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_icon.png" alt="BrightMinds Footer">
-                        <p>&copy; 2024 BrightMinds Research LLC. All rights reserved.</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-        `);
-    } catch (error) {
-        console.error('Error rendering password reset form:', error);
-        res.status(500).send(`
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                <title>Server Error - BrightMinds Research</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                    
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #f1f1f1;
-                    }
-
-                    .email-container {
-                        max-width: 600px;
-                        margin: 50px auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                        text-align: center;
-                    }
-
-                    .email-container h2 {
-                        color: #cc0000;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-
-                    .email-container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-
-                    .button-container {
-                        margin-top: 20px;
-                    }
-
-                    .button-container a {
-                        background-color: #00407A;
-                        color: #f1f1f1;
-                        padding: 12px 24px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-size: 16px;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="email-container">
-                    <h2>Server Error</h2>
-                    <p>Sorry, something went wrong. Please try again later.</p>
-                    <div class="button-container">
-                        <a href="https://www.brightmindsresearch.com/">Visit our Site</a>
-                    </div>
-                </div>
-            </body>
-            </html>
-        `);
-    }
+  try {
+    await sendMail({
+      to: user.email,
+      subject: 'Password Reset - BrightMinds Research',
+      html: passwordResetEmail({ username: user.username, token: user.resetPasswordToken }),
+    });
+  } catch (error) {
+    console.error('Error sending reset email:', error);
+    throw new HttpError(500, 'Error sending reset email.');
+  }
+  res.status(200).json({ message: 'Password reset link sent to your email.' });
 };
 
-exports.resetPassword = async (req, res) => {
-    try {
-        const { token } = req.params;
-        const { password, confirmPassword } = req.body;
+const findUserByResetToken = (token) =>
+  User.findOne({ resetPasswordToken: String(token), resetPasswordExpires: { $gt: Date.now() } });
 
-        // Check if both passwords are provided
-        if (!password || !confirmPassword) {
-            return res.status(400).send(`
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8" />
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                    <title>Invalid Submission - BrightMinds Research</title>
-                    <style>
-                        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                        body {
-                            margin: 0;
-                            padding: 0;
-                            font-family: 'Montserrat', sans-serif;
-                            background-color: #1c1c1c;
-                            color: #f1f1f1;
-                        }
-                        .email-container {
-                            max-width: 600px;
-                            margin: 50px auto;
-                            background-color: #1c1c1c;
-                            border: 1px solid #1c1c1c;
-                            border-radius: 8px;
-                            padding: 20px;
-                            text-align: center;
-                        }
-                        .email-container .logo {
-                            margin-bottom: 20px;
-                        }
-                        .email-container .logo img {
-                            max-width: 230px;
-                        }
-                        .email-container h2 {
-                            color: #cc0000;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                        .email-container p {
-                            font-size: 16px;
-                            line-height: 1.5;
-                            color: #f1f1f1;
-                        }
-                        .button-container {
-                            margin-top: 20px;
-                        }
-                        .button-container a {
-                            background-color: #00407A;
-                            color: #f1f1f1;
-                            padding: 12px 24px;
-                            text-decoration: none;
-                            border-radius: 5px;
-                            font-size: 16px;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="email-container">
-                        <div class="logo">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                        </div>
-                        <h2>Invalid Submission</h2>
-                        <p>Please provide both password fields.</p>
-                        <div class="button-container">
-                            <a href="javascript:history.back()">Go Back</a>
-                        </div>
-                        <div class="footer">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_icon.png" alt="BrightMinds Footer">
-                            <p>&copy; 2024 BrightMinds Research LLC. All rights reserved.</p>
-                        </div>
-                    </div>
-                </body>
-                </html>
-            `);
-        }
+const invalidResetLinkPage = () =>
+  messagePage({
+    title: 'Invalid or Expired Link',
+    paragraphs: ['The password reset link is invalid or has expired.'],
+    error: true,
+  });
 
-        // Check if passwords match
-        if (password !== confirmPassword) {
-            return res.status(400).send(`
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8" />
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                    <title>Passwords Do Not Match - BrightMinds Research</title>
-                    <style>
-                        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                        body {
-                            margin: 0;
-                            padding: 0;
-                            font-family: 'Montserrat', sans-serif;
-                            background-color: #1c1c1c;
-                            color: #f1f1f1;
-                        }
-                        .email-container {
-                            max-width: 600px;
-                            margin: 50px auto;
-                            background-color: #1c1c1c;
-                            border: 1px solid #1c1c1c;
-                            border-radius: 8px;
-                            padding: 20px;
-                            text-align: center;
-                        }
-                        .email-container .logo {
-                            margin-bottom: 20px;
-                        }
-                        .email-container .logo img {
-                            max-width: 230px;
-                        }
-                        .email-container h2 {
-                            color: #cc0000;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                        .email-container p {
-                            font-size: 16px;
-                            line-height: 1.5;
-                            color: #f1f1f1;
-                        }
-                        .button-container {
-                            margin-top: 20px;
-                        }
-                        .button-container a {
-                            background-color: #00407A;
-                            color: #f1f1f1;
-                            padding: 12px 24px;
-                            text-decoration: none;
-                            border-radius: 5px;
-                            font-size: 16px;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="email-container">
-                        <div class="logo">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                        </div>
-                        <h2>Passwords Do Not Match</h2>
-                        <p>The passwords you entered do not match. Please try again.</p>
-                        <div class="button-container">
-                            <a href="javascript:history.back()">Go Back</a>
-                        </div>
-                        <div class="footer">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_icon.png" alt="BrightMinds Footer">
-                            <p>&copy; 2024 BrightMinds Research LLC. All rights reserved.</p>
-                        </div>
-                    </div>
-                </body>
-                </html>
-            `);
-        }
+exports.showResetPasswordForm = htmlRoute(async (req, res) => {
+  const user = await findUserByResetToken(req.params.token);
+  if (!user) {
+    return res.status(400).send(invalidResetLinkPage());
+  }
+  return res.status(200).send(resetPasswordFormPage(req.params.token));
+});
 
-        // Continue with the existing password reset logic
-        const user = await User.findOne({
-            resetPasswordToken: token,
-            resetPasswordExpires: { $gt: Date.now() },
-        });
+exports.resetPassword = htmlRoute(async (req, res) => {
+  const { password, confirmPassword } = req.body;
+  const goBack = { href: 'javascript:history.back()', label: 'Go Back' };
 
-        if (!user) {
-            // Handle invalid or expired token
-            return res.status(400).send(`
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8" />
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                    <title>Invalid or Expired Link - BrightMinds Research</title>
-                    <style>
-                        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                        body {
-                            margin: 0;
-                            padding: 0;
-                            font-family: 'Montserrat', sans-serif;
-                            background-color: #1c1c1c;
-                            color: #f1f1f1;
-                        }
-                        .email-container {
-                            max-width: 600px;
-                            margin: 50px auto;
-                            background-color: #1c1c1c;
-                            border: 1px solid #1c1c1c;
-                            border-radius: 8px;
-                            padding: 20px;
-                            text-align: center;
-                        }
-                        .email-container .logo {
-                            margin-bottom: 20px;
-                        }
-                        .email-container .logo img {
-                            max-width: 230px;
-                        }
-                        .email-container h2 {
-                            color: #cc0000;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                        .email-container p {
-                            font-size: 16px;
-                            line-height: 1.5;
-                            color: #f1f1f1;
-                        }
-                        .button-container {
-                            margin-top: 20px;
-                        }
-                        .button-container a {
-                            background-color: #00407A;
-                            color: #f1f1f1;
-                            padding: 12px 24px;
-                            text-decoration: none;
-                            border-radius: 5px;
-                            font-size: 16px;
-                            font-family: 'MontserratBold', sans-serif;
-                        }
-                        .footer {
-                            text-align: center;
-                            margin-top: 30px;
-                            margin-bottom: 20px;
-                        }
+  if (
+    typeof password !== 'string' ||
+    typeof confirmPassword !== 'string' ||
+    !password ||
+    !confirmPassword
+  ) {
+    return res.status(400).send(
+      messagePage({
+        title: 'Invalid Submission',
+        paragraphs: ['Please provide both password fields.'],
+        error: true,
+        button: goBack,
+      })
+    );
+  }
+  if (password !== confirmPassword) {
+    return res.status(400).send(
+      messagePage({
+        title: 'Passwords Do Not Match',
+        paragraphs: ['The passwords you entered do not match. Please try again.'],
+        error: true,
+        button: goBack,
+      })
+    );
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).send(
+      messagePage({
+        title: 'Password Too Short',
+        paragraphs: [`Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`],
+        error: true,
+        button: goBack,
+      })
+    );
+  }
 
-                        .footer img {
-                            max-width: 100px;
-                        }
+  const user = await findUserByResetToken(req.params.token);
+  if (!user) {
+    return res.status(400).send(invalidResetLinkPage());
+  }
+  user.password = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpires = undefined;
+  await user.save();
 
-                        .footer p {
-                            font-size: 12px;
-                            line-height: 1.5;
-                            color: #f1f1f1;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="email-container">
-                        <div class="logo">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                        </div>
-                        <h2>Invalid or Expired Link</h2>
-                        <p>The password reset link is invalid or has expired.</p>
-                        <div class="footer">
-                            <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_icon.png" alt="BrightMinds Footer">
-                            <p>&copy; 2024 BrightMinds Research LLC. All rights reserved.</p>
-                        </div>
-                    </div>
-                </body>
-                </html>
-            `);
-        }
+  return res.status(200).send(
+    messagePage({
+      title: 'Password Updated',
+      heading: 'Password Updated!',
+      paragraphs: [
+        'Your password has been successfully updated. You can now log in with your new password.',
+      ],
+    })
+  );
+});
 
-        // Hash the new password
-        const hash = await bcrypt.hash(password, 10);
+// ---------------------------------------------------------------- Evaluation list
 
-        // Update user's password and clear the reset token fields
-        user.password = hash;
-        user.resetPasswordToken = undefined;
-        user.resetPasswordExpires = undefined;
-        await user.save();
+/** Marks content as watched and counts it once in tracking.history (per department). */
+exports.updateUserAddContentToList = async (req, res) => {
+  const userId = req.params.id;
+  assertObjectId(userId);
+  const { type } = req.body;
+  const contentId = String(req.body.contentId);
 
-        // Return a success message (styled similarly to your verification emails)
-        return res.status(200).send(`
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                <title>Password Updated - BrightMinds Research</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #f1f1f1;
-                    }
-                    .email-container {
-                        max-width: 600px;
-                        margin: 50px auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                        text-align: center;
-                    }
-                    .email-container .logo {
-                        margin-bottom: 20px;
-                    }
-                    .email-container .logo img {
-                        max-width: 230px;
-                    }
-                    .email-container h2 {
-                        color: #00407A;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-                    .email-container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-                    .footer {
-                        text-align: center;
-                        margin-top: 20px;
-                        margin-bottom: 20px;
-                    }
-                    .footer img {
-                        max-width: 100px;
-                    }
-                    .footer p {
-                        font-size: 12px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="email-container">
-                    <div class="logo">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_title.png" alt="BrightMinds Research">
-                    </div>
-                    <h2>Password Updated!</h2>
-                    <p>Your password has been successfully updated. You can now log in with your new password.</p>
-                    <div class="footer">
-                        <img src="${API_BASE_URL}/backend/media/verification_email/BrightMinds_icon.png" alt="BrightMinds Footer">
-                        <p>&copy; 2024 BrightMinds Research LLC. All rights reserved.</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-        `);
-    } catch (error) {
-        console.error('Error resetting password:', error);
-        return res.status(500).send(`
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-                <title>Server Error - BrightMinds Research</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap');
-                    body {
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Montserrat', sans-serif;
-                        background-color: #1c1c1c;
-                        color: #f1f1f1;
-                    }
-                    .email-container {
-                        max-width: 600px;
-                        margin: 50px auto;
-                        background-color: #1c1c1c;
-                        border: 1px solid #1c1c1c;
-                        border-radius: 8px;
-                        padding: 20px;
-                        text-align: center;
-                    }
-                    .email-container h2 {
-                        color: #cc0000;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-                    .email-container p {
-                        font-size: 16px;
-                        line-height: 1.5;
-                        color: #f1f1f1;
-                    }
-                    .button-container {
-                        margin-top: 20px;
-                    }
-                    .button-container a {
-                        background-color: #00407A;
-                        color: #f1f1f1;
-                        padding: 12px 24px;
-                        text-decoration: none;
-                        border-radius: 5px;
-                        font-size: 16px;
-                        font-family: 'MontserratBold', sans-serif;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="email-container">
-                    <h2>Server Error</h2>
-                    <p>Sorry, something went wrong. Please try again later.</p>
-                    <div class="button-container">
-                        <a href="https://www.brightmindsresearch.com/">Visit our Site</a>
-                    </div>
-                </div>
-            </body>
-            </html>
-        `);
-    }
+  const Model = type === 'cast' ? Cast : type === 'article' ? Article : null;
+  if (!Model) throw badRequest('Invalid content type.');
+  assertObjectId(contentId, 'contentId');
+  const content = await Model.findById(contentId).select('department');
+  if (!content) throw notFound(`${type === 'cast' ? 'Cast' : 'Article'} not found.`);
+  if (!(await User.exists({ _id: userId }))) throw notFound('User not found.');
+
+  const existing = await User.updateOne(
+    { _id: userId, 'evaluation_list.contentid': contentId },
+    { $set: { 'evaluation_list.$.watched': true, 'evaluation_list.$.type': type } }
+  );
+  if (existing.matchedCount > 0) {
+    return res.status(200).json({ message: 'Content already in evaluation list.' });
+  }
+
+  // The $ne guard protects against concurrent duplicate inserts.
+  const added = await User.updateOne(
+    { _id: userId, 'evaluation_list.contentid': { $ne: contentId } },
+    { $push: { evaluation_list: { contentid: contentId, type, watched: true, answered: false } } }
+  );
+  if (added.matchedCount === 0) {
+    return res.status(200).json({ message: 'Content already in evaluation list.' });
+  }
+
+  const category = content.department;
+  const history = await User.updateOne(
+    { _id: userId, 'tracking.history.category': category },
+    { $inc: { 'tracking.history.$.count': 1 } }
+  );
+  if (history.matchedCount === 0) {
+    await User.updateOne(
+      { _id: userId },
+      { $push: { 'tracking.history': { category, count: 1 } } }
+    );
+  }
+
+  return res.status(200).json({ message: 'Content added to evaluation list and history updated.' });
 };
 
+exports.updateUserRemoveContentFromList = async (req, res) => {
+  assertObjectId(req.params.id);
+  const result = await User.updateOne(
+    { _id: req.params.id },
+    { $pull: { evaluation_list: { contentid: String(req.body.contentId) } } }
+  );
+  if (result.matchedCount === 0) throw notFound('User not found.');
+  res.status(200).json({ message: 'Content removed from evaluation list.' });
+};
 
-  
+exports.markContentAsAnswered = async (req, res) => {
+  const user = await findUserOr404(req.params.id);
+  const contentId = String(req.body.contentId);
+  const evaluation = user.evaluation_list.find((item) => item.contentid === contentId);
+  if (!evaluation) throw notFound('Evaluation not found.');
+  evaluation.answered = true;
+  await user.save();
+  res.status(200).json({ message: 'Content marked as answered.' });
+};
+
+// ---------------------------------------------------------------- Bookmarks
+
+/** `?expand=true` embeds the bookmarked cast/article document in each entry. */
+exports.getUserBookmarks = async (req, res) => {
+  const user = await findUserOr404(req.params.id, 'bookmarkedcontent');
+  const bookmarks = user.toObject().bookmarkedcontent || [];
+  if (!normalizeBoolean(req.query.expand || req.query.includeContent)) {
+    return res.status(200).json(bookmarks);
+  }
+
+  const castIds = new Set();
+  const articleIds = new Set();
+  for (const bookmark of bookmarks) {
+    const id = bookmark.contentid ? String(bookmark.contentid).trim() : null;
+    if (!isValidObjectId(id)) continue;
+    const type = normalizeContentType(bookmark.type);
+    // Legacy bookmarks have no type: look them up in both collections.
+    if (type !== 'article') castIds.add(id);
+    if (type !== 'cast') articleIds.add(id);
+  }
+
+  const [casts, articles] = await Promise.all([
+    castIds.size ? Cast.find({ _id: { $in: [...castIds] } }).lean() : [],
+    articleIds.size ? Article.find({ _id: { $in: [...articleIds] } }).lean() : [],
+  ]);
+  const castMap = new Map(casts.map((cast) => [String(cast._id), cast]));
+  const articleMap = new Map(articles.map((article) => [String(article._id), article]));
+
+  const expanded = bookmarks.map((bookmark) => {
+    const contentid = bookmark.contentid ? String(bookmark.contentid).trim() : null;
+    let type = normalizeContentType(bookmark.type);
+    let content = null;
+    if (contentid) {
+      if (type !== 'article' && castMap.has(contentid)) {
+        type = 'cast';
+        content = castMap.get(contentid);
+      } else if (type !== 'cast' && articleMap.has(contentid)) {
+        type = 'article';
+        content = articleMap.get(contentid);
+      }
+    }
+    return {
+      contentid,
+      type: contentid ? type : null,
+      bookmarkedAt: bookmark.bookmarkedAt || null,
+      content,
+    };
+  });
+  return res.status(200).json(expanded);
+};
+
+exports.addUserBookmark = async (req, res) => {
+  const userId = req.params.id;
+  assertObjectId(userId);
+  const rawType = req.body.type || req.body.contentType;
+  if (rawType && !normalizeContentType(rawType)) throw badRequest('Invalid content type.');
+  const { contentId, type } = resolveBookmarkInput(req.body);
+  if (!contentId) throw badRequest('contentId is required.');
+  assertObjectId(contentId, 'contentId');
+  if (!(await User.exists({ _id: userId }))) throw notFound('User not found.');
+
+  let resolvedType = type;
+  if (!resolvedType) {
+    const [cast, article] = await Promise.all([
+      Cast.exists({ _id: contentId }),
+      Article.exists({ _id: contentId }),
+    ]);
+    if (cast && article) throw badRequest('Content type is required.');
+    if (!cast && !article) throw notFound('Content not found.');
+    resolvedType = cast ? 'cast' : 'article';
+  } else {
+    const Model = resolvedType === 'cast' ? Cast : Article;
+    if (!(await Model.exists({ _id: contentId }))) {
+      throw notFound(`${resolvedType === 'cast' ? 'Cast' : 'Article'} not found.`);
+    }
+  }
+
+  const added = await User.updateOne(
+    { _id: userId, 'bookmarkedcontent.contentid': { $ne: contentId } },
+    {
+      $push: {
+        bookmarkedcontent: { contentid: contentId, type: resolvedType, bookmarkedAt: new Date() },
+      },
+    }
+  );
+  if (added.modifiedCount === 0) {
+    // Backfill the type on legacy bookmarks that were saved without one.
+    await User.updateOne(
+      {
+        _id: userId,
+        bookmarkedcontent: { $elemMatch: { contentid: contentId, type: { $exists: false } } },
+      },
+      { $set: { 'bookmarkedcontent.$.type': resolvedType } }
+    );
+    throw badRequest('Element is already bookmarked.');
+  }
+
+  res.status(201).json({
+    message: 'Element bookmarked.',
+    bookmark: { contentid: contentId, type: resolvedType },
+  });
+};
+
+/** Optional `?type=cast|article` only removes the bookmark if its type matches. */
+exports.removeUserBookmark = async (req, res) => {
+  const userId = req.params.id;
+  assertObjectId(userId);
+  const contentId = String(req.params.contentId);
+  const rawType = req.query.type || req.query.contentType || req.body.type || req.body.contentType;
+  const type = normalizeContentType(rawType);
+  if (rawType && !type) throw badRequest('Invalid content type.');
+  if (!(await User.exists({ _id: userId }))) throw notFound('User not found.');
+
+  const result = await User.updateOne(
+    { _id: userId },
+    {
+      $pull: {
+        bookmarkedcontent: type ? { contentid: contentId, type } : { contentid: contentId },
+      },
+    }
+  );
+  if (result.modifiedCount === 0) throw notFound('Bookmark not found.');
+  res.status(200).json({ message: 'Element removed from bookmarks.' });
+};
+
+// ---------------------------------------------------------------- Preferences & tracking
+
+/**
+ * Casts from the user's preferred departments: highest weight first, ties in preference order,
+ * then by _id within a department.
+ */
+exports.getSuggestedForYou = async (req, res) => {
+  const user = await findUserOr404(req.params.id, 'preferences');
+  if (!user.preferences?.length) throw notFound('No preferences set for user.');
+
+  // Rank per department: its best weight, and the position of the preference giving it.
+  const rankByDepartment = new Map();
+  user.preferences.forEach((pref, index) => {
+    const current = rankByDepartment.get(pref.category);
+    if (!current || pref.weight > current.weight) {
+      rankByDepartment.set(pref.category, { weight: pref.weight, index });
+    }
+  });
+
+  const casts = await Cast.find({ department: { $in: [...rankByDepartment.keys()] } })
+    .sort({ _id: 1 })
+    .lean();
+  // Array.prototype.sort is stable: casts keep _id order within a department.
+  casts.sort((a, b) => {
+    const rankA = rankByDepartment.get(a.department);
+    const rankB = rankByDepartment.get(b.department);
+    return rankB.weight - rankA.weight || rankA.index - rankB.index;
+  });
+  res.status(200).json(casts);
+};
+
+exports.getUserPreferences = async (req, res) => {
+  const user = await findUserOr404(req.params.id, 'preferences');
+  res.status(200).json({ preferences: user.preferences });
+};
+
+/** `modification: 'positive' | 'negative'` adjusts a department's count; weights are recomputed as %. */
+exports.updateUserPreferences = async (req, res) => {
+  const { category, modification } = req.body;
+  if (modification !== 'positive' && modification !== 'negative') {
+    throw badRequest('Invalid modification type. Must be either "positive" or "negative".');
+  }
+  if (!departmentNames.includes(category)) {
+    throw badRequest('Invalid category. Must be one of the predefined departments.');
+  }
+
+  const user = await findUserOr404(req.params.id);
+  const existing = user.preferences.find((pref) => pref.category === category);
+  if (existing) {
+    existing.count = Math.max(0, existing.count + (modification === 'positive' ? 1 : -1));
+  } else if (modification === 'positive') {
+    user.preferences.push({ category, weight: 0, count: 1 });
+  }
+
+  const total = user.preferences.reduce((sum, pref) => sum + pref.count, 0);
+  user.preferences.forEach((pref) => {
+    pref.weight = total > 0 ? (pref.count / total) * 100 : 0;
+  });
+  await user.save();
+  res.status(200).json({ message: 'User preferences updated.', preferences: user.preferences });
+};
+
+exports.updateUserTracking = async (req, res) => {
+  const { objective } = req.body;
+  if (!isObjective(objective)) {
+    throw badRequest(
+      'Invalid objective value. Must be one of Follower, Explorer, Deep Learner, Career, or Researcher.'
+    );
+  }
+  const user = await findUserOr404(req.params.id);
+  user.tracking.objective = objective;
+  user.tracking.target = getTargetValue(objective);
+  await user.save();
+  res.status(200).json({ message: 'Tracking updated successfully.', tracking: user.tracking });
+};
+
+exports.getUserTracking = async (req, res) => {
+  const user = await findUserOr404(req.params.id, 'tracking');
+  res.status(200).json({ tracking: user.tracking, target: user.tracking.target });
+};

@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+node_modules
+coverage
+tests
+.env
+.env.*
+*.log
+backend/media/*/*
+!backend/media/verification_email/*

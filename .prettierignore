@@ -1,0 +1,5 @@
+node_modules/
+coverage/
+backend/media/
+package-lock.json
+openapi.yaml

@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const topicSchema = mongoose.Schema({
+const topicSchema = new mongoose.Schema({
   name: { type: String, required: true },
   departmentName: { type: String, required: true },
   articleCount: { type: Number, default: 0 },
