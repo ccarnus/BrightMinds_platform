@@ -2,13 +2,33 @@ openapi: 3.0.3
 info:
   title: BrightMinds Backend API
   version: 1.0.0
-  description: OpenAPI specification for the BrightMinds backend.
+  description: |
+    OpenAPI specification for the BrightMinds backend.
+
+    **Authentication.** Operations marked with `bearerAuth` expect an
+    `Authorization: Bearer <token>` header, where the JWT is obtained from
+    `POST /user/login`. Authentication is only enforced when the server runs with
+    `AUTH_REQUIRED=true`; otherwise a missing or invalid token is ignored. When
+    enforced, a missing or invalid/expired token yields `401`.
+
+    **Own-account routes.** User routes that take the account id as `{id}`
+    (profile update/delete, evaluation list, bookmarks, preferences, tracking,
+    suggestions) additionally require the token's user to match `{id}`;
+    otherwise the server answers `403` (also only when `AUTH_REQUIRED=true`).
+
+    **Errors.** JSON errors use the `Error` schema: `{ "error": "...", "message": "..." }`.
+    Both keys carry the same text, for backward compatibility with clients that read
+    either one. Common cases: `400` for malformed ObjectIds, validation errors,
+    malformed JSON bodies and malformed multipart JSON fields; `404` when a resource
+    (or route) does not exist; `409` on duplicates; `413` when an upload or JSON
+    body (1 MB) is too large; `500` for unexpected errors.
 servers:
   - url: http://localhost:3000
     description: Local development
   - url: https://api.brightmindsresearch.com
     description: Production
 tags:
+  - name: System
   - name: Cast
   - name: Article
   - name: User
@@ -17,10 +37,42 @@ tags:
   - name: Topic
 
 paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      description: Reports whether the API is up and connected to the database.
+      responses:
+        "200":
+          description: API and database are up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: ok
+                db: up
+        "503":
+          description: Database is not connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: degraded
+                db: down
+
+  # ------------------------------------------------------------------ Cast
   /cast:
     post:
       tags: [Cast]
       summary: Create a cast
+      description: |
+        Multipart upload of the video plus a `cast` form field holding a JSON-encoded
+        `CastCreate` object. Duration is read from the video; transcription, image,
+        evaluation and (if no topic is given) topic generation run in a background queue.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -30,20 +82,31 @@ paths:
               properties:
                 cast:
                   type: string
-                  description: JSON string with cast fields
-                file:
+                  description: JSON-encoded `CastCreate` object.
+                  example: '{"title":"My cast","brightmindid":"665f1c2e9b1e8a0012345678","university":"MIT","category":"Research","visibility":"public","department":"ComputerScience"}'
+                video:
                   type: string
                   format: binary
-              required: [cast, file]
+                  description: Video file (video/mp4, video/mpeg or video/webm, max 1024 MB).
+              required: [cast, video]
+            encoding:
+              video:
+                contentType: video/mp4, video/mpeg, video/webm
       responses:
         "201":
-          description: Cast created
+          description: Cast created; background processing started
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Cast"
+                $ref: "#/components/schemas/CreatedResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     get:
       tags: [Cast]
       summary: List all casts
@@ -79,66 +142,46 @@ paths:
                           type: string
                         title:
                           type: string
-  /cast/{id}:
+  /cast/trending/right/now:
     get:
       tags: [Cast]
-      summary: Get cast by ID
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
+      summary: Get trending casts
+      description: All casts, newest first.
       responses:
         "200":
-          description: Cast
+          description: Trending casts
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Cast"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    put:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Cast"
+  /cast/popular/department:
+    get:
       tags: [Cast]
-      summary: Update cast
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                cast:
-                  type: string
-                  description: JSON string with cast fields
-                file:
-                  type: string
-                  format: binary
+      summary: Get most popular departments
+      description: Number of casts per department, most popular first.
       responses:
         "200":
-          description: Cast updated
+          description: Department popularity
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Cast"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-    delete:
-      tags: [Cast]
-      summary: Delete cast
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Cast deleted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
+                type: array
+                items:
+                  type: object
+                  properties:
+                    _id:
+                      type: string
+                      description: Department name
+                    count:
+                      type: integer
   /cast/category/{id}:
     get:
       tags: [Cast]
       summary: Get casts by category
       parameters:
-        - $ref: "#/components/parameters/IdParam"
+        - $ref: "#/components/parameters/CategoryParam"
       responses:
         "200":
           description: List of casts
@@ -153,12 +196,13 @@ paths:
       tags: [Cast]
       summary: Get casts by department
       parameters:
-        - $ref: "#/components/parameters/IdParam"
+        - $ref: "#/components/parameters/DepartmentParam"
         - name: topic
           in: query
+          required: false
+          description: Only return casts of this topic.
           schema:
             type: string
-          required: false
       responses:
         "200":
           description: List of casts
@@ -173,7 +217,7 @@ paths:
       tags: [Cast]
       summary: Get casts by creator (brightmindid)
       parameters:
-        - $ref: "#/components/parameters/IdParam"
+        - $ref: "#/components/parameters/BrightmindIdParam"
       responses:
         "200":
           description: List of casts
@@ -199,6 +243,94 @@ paths:
                 properties:
                   evaluation:
                     $ref: "#/components/schemas/Evaluation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /cast/{id}:
+    get:
+      tags: [Cast]
+      summary: Get cast by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Cast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Cast]
+      summary: Update cast (partial)
+      description: |
+        Partial update. Only the fields present in the `cast` JSON field are changed.
+        An optional new `video` replaces the previous one (its duration is re-read and
+        the old file is deleted).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                cast:
+                  type: string
+                  description: JSON-encoded `CastUpdate` object (fields to change).
+                  example: '{"title":"New title","topic":"Machine Learning"}'
+                video:
+                  type: string
+                  format: binary
+                  description: Optional replacement video (video/mp4, video/mpeg or video/webm, max 1024 MB).
+            encoding:
+              video:
+                contentType: video/mp4, video/mpeg, video/webm
+      responses:
+        "200":
+          description: Cast updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+    delete:
+      tags: [Cast]
+      summary: Delete cast
+      description: Deletes the cast, its media files, user references and topic link.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Cast deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /cast/{id}/rating:
     get:
       tags: [Cast]
@@ -215,9 +347,16 @@ paths:
                 properties:
                   rating:
                     $ref: "#/components/schemas/Rating"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       tags: [Cast]
-      summary: Update cast rating
+      summary: Rate a cast
+      description: "`+` counts as a 10/10 vote, `-` as 0/10; averaged into `rating.value`."
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -225,59 +364,32 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                action:
-                  type: string
-                  enum: ["+", "-"]
-              required: [action]
+              $ref: "#/components/schemas/RatingAction"
       responses:
         "200":
           description: Rating updated
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  rating:
-                    $ref: "#/components/schemas/Rating"
-  /cast/trending/right/now:
-    get:
-      tags: [Cast]
-      summary: Get trending casts
-      responses:
-        "200":
-          description: Trending casts
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Cast"
-  /cast/popular/department:
-    get:
-      tags: [Cast]
-      summary: Get most popular departments
-      responses:
-        "200":
-          description: Department popularity
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    _id:
-                      type: string
-                    count:
-                      type: integer
+                $ref: "#/components/schemas/RatingUpdateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ Article
   /article:
     post:
       tags: [Article]
       summary: Create an article
+      description: |
+        The evaluation question and the article image are generated with OpenAI before
+        saving; if either generation fails the article is not created (502). If no topic
+        is given, it is generated in a background queue.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -290,9 +402,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Article"
+                $ref: "#/components/schemas/CreatedResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/BadGateway"
     get:
       tags: [Article]
       summary: List all articles
@@ -305,59 +421,26 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Article"
-  /article/{id}:
+  /article/trending/right/now:
     get:
       tags: [Article]
-      summary: Get article by ID
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
+      summary: Get trending articles
+      description: Articles added in the last 14 days, best rated first.
       responses:
         "200":
-          description: Article
+          description: Trending articles
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Article"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    put:
-      tags: [Article]
-      summary: Update article
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ArticleUpdate"
-      responses:
-        "201":
-          description: Article updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-    delete:
-      tags: [Article]
-      summary: Delete article
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Article deleted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
   /article/category/{id}:
     get:
       tags: [Article]
       summary: Get articles by category
       parameters:
-        - $ref: "#/components/parameters/IdParam"
+        - $ref: "#/components/parameters/CategoryParam"
       responses:
         "200":
           description: List of articles
@@ -372,7 +455,7 @@ paths:
       tags: [Article]
       summary: Get articles by department
       parameters:
-        - $ref: "#/components/parameters/IdParam"
+        - $ref: "#/components/parameters/DepartmentParam"
       responses:
         "200":
           description: List of articles
@@ -387,7 +470,7 @@ paths:
       tags: [Article]
       summary: Get articles by creator (brightmindid)
       parameters:
-        - $ref: "#/components/parameters/IdParam"
+        - $ref: "#/components/parameters/BrightmindIdParam"
       responses:
         "200":
           description: List of articles
@@ -413,6 +496,75 @@ paths:
                 properties:
                   evaluation:
                     $ref: "#/components/schemas/Evaluation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /article/{id}:
+    get:
+      tags: [Article]
+      summary: Get article by ID
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Article
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Article]
+      summary: Update article (partial)
+      description: Partial update. Only the fields present in the body are changed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArticleUpdate"
+      responses:
+        "201":
+          description: Article updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Article]
+      summary: Delete article
+      description: Deletes the article, its image, user references and topic link.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Article deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /article/{id}/rating:
     get:
       tags: [Article]
@@ -429,9 +581,16 @@ paths:
                 properties:
                   rating:
                     $ref: "#/components/schemas/Rating"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       tags: [Article]
-      summary: Update article rating
+      summary: Rate an article
+      description: "`+` counts as a 10/10 vote, `-` as 0/10; averaged into `rating.value`."
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -439,41 +598,30 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                action:
-                  type: string
-                  enum: ["+", "-"]
-              required: [action]
+              $ref: "#/components/schemas/RatingAction"
       responses:
         "200":
           description: Rating updated
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  rating:
-                    $ref: "#/components/schemas/Rating"
-  /article/trending/right/now:
-    get:
-      tags: [Article]
-      summary: Get trending articles
-      responses:
-        "200":
-          description: Trending articles
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Article"
+                $ref: "#/components/schemas/RatingUpdateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ User
   /user/signup:
     post:
       tags: [User]
       summary: Create a user account
+      description: |
+        Multipart upload of the profile picture plus a `user` form field holding a
+        JSON-encoded `UserSignup` object. Sends a verification email; if sending fails
+        the account is rolled back (500). Rate limited.
       requestBody:
         required: true
         content:
@@ -483,33 +631,55 @@ paths:
               properties:
                 user:
                   type: string
-                  description: JSON string containing user fields
-                file:
+                  description: JSON-encoded `UserSignup` object.
+                  example: '{"email":"jane@university.edu","password":"secret","username":"jane","role":"Researcher","university":"MIT","objective":"Explorer"}'
+                image:
                   type: string
                   format: binary
-              required: [user, file]
+                  description: Profile picture (image/jpeg or image/png, max 10 MB).
+              required: [user, image]
+            encoding:
+              image:
+                contentType: image/jpeg, image/png
       responses:
         "201":
-          description: User created
+          description: User created; verification email sent
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /user/confirmation/{token}:
     get:
       tags: [User]
       summary: Confirm user email
+      description: Opened from the verification email; renders an HTML page.
       parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/TokenParam"
       responses:
         "200":
-          description: HTML response
+          description: Account verified (HTML page)
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: Unknown token or account already verified (HTML page)
+          content:
+            text/html:
+              schema:
+                type: string
+        "500":
+          description: Server error (HTML page)
           content:
             text/html:
               schema:
@@ -518,6 +688,7 @@ paths:
     post:
       tags: [User]
       summary: Login
+      description: "Returns the JWT to send as `Authorization: Bearer <token>`. Rate limited."
       requestBody:
         required: true
         content:
@@ -533,7 +704,7 @@ paths:
               required: [email, password]
       responses:
         "200":
-          description: Login response
+          description: Login successful
           content:
             application/json:
               schema:
@@ -545,10 +716,27 @@ paths:
                     type: string
                   token:
                     type: string
+                    description: JWT for the `bearerAuth` scheme.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unknown email or incorrect password
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response:
+                    type: string
+                    enum: [user not found., incorrect password]
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /user:
     get:
       tags: [User]
       summary: List users
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of users
@@ -558,10 +746,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /user/{id}:
     get:
       tags: [User]
       summary: Get user by ID
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -571,9 +763,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
     put:
       tags: [User]
-      summary: Update user
+      summary: Update own user (partial)
+      description: |
+        Partial update of the authenticated user's own account. Send multipart
+        (optional `image` + `user` JSON string) or a JSON body with the fields wrapped
+        in a `user` object. Password and verification fields cannot be changed here.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -585,20 +789,50 @@ paths:
               properties:
                 user:
                   type: string
-                  description: JSON string with user fields
-                file:
+                  description: JSON-encoded `UserUpdate` object (fields to change).
+                  example: '{"username":"jane.doe"}'
+                image:
                   type: string
                   format: binary
+                  description: Optional new profile picture (image/jpeg or image/png, max 10 MB).
+            encoding:
+              image:
+                contentType: image/jpeg, image/png
+          application/json:
+            schema:
+              type: object
+              properties:
+                user:
+                  $ref: "#/components/schemas/UserUpdate"
       responses:
         "200":
           description: User updated
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     delete:
       tags: [User]
-      summary: Delete user
+      summary: Delete own user
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -608,10 +842,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/reset-password-request:
     post:
       tags: [User]
       summary: Request password reset
+      description: Emails a reset link valid for one hour. Rate limited.
       requestBody:
         required: true
         content:
@@ -630,19 +873,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /user/reset-password/{token}:
     get:
       tags: [User]
       summary: Show reset password form
+      description: Opened from the reset email; renders an HTML form.
       parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/TokenParam"
       responses:
         "200":
-          description: HTML response
+          description: Reset form (HTML page)
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: Invalid or expired link (HTML page)
+          content:
+            text/html:
+              schema:
+                type: string
+        "500":
+          description: Server error (HTML page)
           content:
             text/html:
               schema:
@@ -650,27 +910,35 @@ paths:
     post:
       tags: [User]
       summary: Reset password
+      description: Submitted by the HTML reset form. Rate limited.
       parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/TokenParam"
       requestBody:
         required: true
         content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/PasswordReset"
           application/json:
             schema:
-              type: object
-              properties:
-                password:
-                  type: string
-                confirmPassword:
-                  type: string
-              required: [password, confirmPassword]
+              $ref: "#/components/schemas/PasswordReset"
       responses:
         "200":
-          description: Password updated
+          description: Password updated (HTML page)
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: Missing/mismatched/too short password, or invalid or expired link (HTML page)
+          content:
+            text/html:
+              schema:
+                type: string
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          description: Server error (HTML page)
           content:
             text/html:
               schema:
@@ -679,6 +947,11 @@ paths:
     post:
       tags: [User]
       summary: Add content to evaluation list
+      description: |
+        Marks the content as watched. The first time a content is added, the user's
+        `tracking.history` count for the content's department is incremented.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -690,21 +963,32 @@ paths:
               properties:
                 contentId:
                   type: string
+                  description: Cast or article ObjectId.
                 type:
                   type: string
                   enum: [cast, article]
               required: [contentId, type]
       responses:
         "200":
-          description: Content added
+          description: Content added (or already in the list)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/remove/content/{id}:
     post:
       tags: [User]
       summary: Remove content from evaluation list
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -724,10 +1008,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/mark/content/as/answered/{id}:
     post:
       tags: [User]
       summary: Mark content as answered
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -742,15 +1036,29 @@ paths:
               required: [contentId]
       responses:
         "200":
-          description: Content marked
+          description: Content marked as answered
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: User not found, or content not in the evaluation list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /user/bookmarks/{id}:
     get:
       tags: [User]
       summary: Get user bookmarks
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
         - name: expand
@@ -758,7 +1066,7 @@ paths:
           required: false
           schema:
             type: boolean
-          description: Include full content objects with each bookmark.
+          description: Include the full cast/article document with each bookmark (`true`, `1` or `yes`).
         - name: includeContent
           in: query
           required: false
@@ -767,7 +1075,7 @@ paths:
           description: Alias for expand.
       responses:
         "200":
-          description: Bookmarks
+          description: Bookmarks (expanded when `expand=true`)
           content:
             application/json:
               schema:
@@ -778,10 +1086,23 @@ paths:
                   - type: array
                     items:
                       $ref: "#/components/schemas/BookmarkExpanded"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/add/bookmarks/{id}:
     post:
       tags: [User]
       summary: Add bookmark
+      description: |
+        If `type` is omitted, it is inferred from the collection the content belongs to.
+        Returns 400 if the content is already bookmarked.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -817,10 +1138,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BookmarkAddResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/remove/bookmarks/{id}/{contentId}:
     delete:
       tags: [User]
       summary: Remove bookmark
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
         - name: contentId
@@ -831,6 +1162,7 @@ paths:
         - name: type
           in: query
           required: false
+          description: Only remove the bookmark if its type matches.
           schema:
             type: string
             enum: [cast, article]
@@ -841,10 +1173,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: User or bookmark not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /user/{id}/preferences:
     get:
       tags: [User]
       summary: Get user preferences
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -859,9 +1205,20 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Preference"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       tags: [User]
       summary: Update user preferences
+      description: Adjusts a department's count by one; weights are recomputed as percentages.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -872,7 +1229,7 @@ paths:
               type: object
               properties:
                 category:
-                  type: string
+                  $ref: "#/components/schemas/Department"
                 modification:
                   type: string
                   enum: [positive, negative]
@@ -891,10 +1248,21 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Preference"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/{id}/suggested/for/you:
     get:
       tags: [User]
       summary: Get suggested casts for user
+      description: Casts from the user's preferred departments, highest preference weight first.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -906,10 +1274,25 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Cast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: User not found, or user has no preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /user/{id}/update/tracking:
     put:
       tags: [User]
       summary: Update user tracking objective
+      description: Also sets `tracking.target` from the objective.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -920,8 +1303,7 @@ paths:
               type: object
               properties:
                 objective:
-                  type: string
-                  enum: [Follower, Explorer, Deep Learner, Career, Researcher]
+                  $ref: "#/components/schemas/Objective"
               required: [objective]
       responses:
         "200":
@@ -935,10 +1317,20 @@ paths:
                     type: string
                   tracking:
                     $ref: "#/components/schemas/UserTracking"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/{id}/tracking:
     get:
       tags: [User]
       summary: Get user tracking
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -953,10 +1345,22 @@ paths:
                     $ref: "#/components/schemas/UserTracking"
                   target:
                     type: number
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ University
   /university:
     post:
       tags: [University]
       summary: Create university
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -966,11 +1370,16 @@ paths:
               properties:
                 university:
                   type: string
-                  description: JSON string with university fields
-                file:
+                  description: JSON-encoded `UniversityInput` object (`name` and `displayedName` required).
+                  example: '{"name":"MIT","displayedName":"Massachusetts Institute of Technology"}'
+                icon:
                   type: string
                   format: binary
-              required: [university, file]
+                  description: Icon image (image/jpeg or image/png, max 10 MB).
+              required: [university, icon]
+            encoding:
+              icon:
+                contentType: image/jpeg, image/png
       responses:
         "201":
           description: University created
@@ -978,6 +1387,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     get:
       tags: [University]
       summary: List universities
@@ -990,6 +1405,26 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/University"
+  /university/by/name/{id}:
+    get:
+      tags: [University]
+      summary: Get university by name
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: University `name` (not an ObjectId).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: University
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/University"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /university/{id}:
     get:
       tags: [University]
@@ -1003,9 +1438,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/University"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
     put:
       tags: [University]
-      summary: Update university
+      summary: Update university (partial)
+      description: |
+        Send multipart (optional `icon` + `university` JSON string) or a plain JSON body.
+        A new icon replaces (and deletes) the previous one.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -1017,10 +1461,18 @@ paths:
               properties:
                 university:
                   type: string
-                  description: JSON string with university fields
-                file:
+                  description: JSON-encoded `UniversityInput` object (fields to change).
+                  example: '{"displayedName":"MIT"}'
+                icon:
                   type: string
                   format: binary
+                  description: Optional new icon (image/jpeg or image/png, max 10 MB).
+            encoding:
+              icon:
+                contentType: image/jpeg, image/png
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UniversityInput"
       responses:
         "201":
           description: University updated
@@ -1028,9 +1480,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     delete:
       tags: [University]
       summary: Delete university
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -1040,23 +1502,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
-  /university/by/name/{id}:
-    get:
-      tags: [University]
-      summary: Get university by name
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: University
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/University"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ Virtual lab
   /virtual/lab:
     post:
       tags: [VirtualLab]
       summary: Create virtual lab
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -1066,11 +1525,16 @@ paths:
               properties:
                 virtuallab:
                   type: string
-                  description: JSON string with virtual lab fields
-                file:
+                  description: JSON-encoded `VirtualLabInput` object (`name` and `colorcode` required).
+                  example: '{"name":"AI Lab","colorcode":"#3366ff"}'
+                icon:
                   type: string
                   format: binary
-              required: [virtuallab, file]
+                  description: Icon image (image/jpeg or image/png, max 10 MB).
+              required: [virtuallab, icon]
+            encoding:
+              icon:
+                contentType: image/jpeg, image/png
       responses:
         "201":
           description: Virtual lab created
@@ -1078,6 +1542,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     get:
       tags: [VirtualLab]
       summary: List virtual labs
@@ -1103,9 +1575,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VirtualLab"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
     put:
       tags: [VirtualLab]
-      summary: Update virtual lab
+      summary: Update virtual lab (partial)
+      description: |
+        Send multipart (optional `icon` + `virtuallab` JSON string) or a plain JSON body.
+        A new icon replaces (and deletes) the previous one.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -1115,27 +1596,20 @@ paths:
             schema:
               type: object
               properties:
-                name:
+                virtuallab:
                   type: string
-                followers:
-                  type: array
-                  items:
-                    $ref: "#/components/schemas/VLUserRef"
-                members:
-                  type: array
-                  items:
-                    $ref: "#/components/schemas/VLUserRef"
-                topics:
-                  type: array
-                  items:
-                    $ref: "#/components/schemas/VLTopic"
-                colorcode:
-                  type: string
-                iconurl:
-                  type: string
-                file:
+                  description: JSON-encoded `VirtualLabInput` object (fields to change).
+                  example: '{"colorcode":"#ff6600"}'
+                icon:
                   type: string
                   format: binary
+                  description: Optional new icon (image/jpeg or image/png, max 10 MB).
+            encoding:
+              icon:
+                contentType: image/jpeg, image/png
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VirtualLabInput"
       responses:
         "200":
           description: Virtual lab updated
@@ -1143,9 +1617,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     delete:
       tags: [VirtualLab]
       summary: Delete virtual lab
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       responses:
@@ -1155,16 +1641,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /virtual/lab/{labId}/add/institute:
     post:
       tags: [VirtualLab]
       summary: Add institute to virtual lab
+      security:
+        - bearerAuth: []
       parameters:
-        - name: labId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/LabIdParam"
       requestBody:
         required: true
         content:
@@ -1176,6 +1666,7 @@ paths:
                   type: string
                 score:
                   type: number
+                  default: 0
               required: [instituteID]
       responses:
         "200":
@@ -1184,28 +1675,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /virtual/lab/{labId}/update/institute/{instituteId}:
     put:
       tags: [VirtualLab]
       summary: Update institute
+      security:
+        - bearerAuth: []
       parameters:
-        - name: labId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: instituteId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/LabIdParam"
+        - $ref: "#/components/parameters/InstituteIdParam"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: true
+              $ref: "#/components/schemas/VLInstitute"
       responses:
         "200":
           description: Institute updated
@@ -1213,21 +1703,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Virtual lab or institute not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /virtual/lab/{labId}/remove/institute/{instituteId}:
     delete:
       tags: [VirtualLab]
       summary: Remove institute
+      security:
+        - bearerAuth: []
       parameters:
-        - name: labId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: instituteId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/LabIdParam"
+        - $ref: "#/components/parameters/InstituteIdParam"
       responses:
         "200":
           description: Institute removed
@@ -1235,12 +1729,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Virtual lab or institute not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /virtual/lab/{id}/add/topic:
     post:
       tags: [VirtualLab]
       summary: Add topic to virtual lab
+      description: The new topic starts with empty `followers`, `members` and `threads`.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VLTopicInput"
+      responses:
+        "200":
+          description: Topic added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /virtual/lab/{labId}/update/topic/{topicId}:
+    put:
+      tags: [VirtualLab]
+      summary: Update topic in virtual lab
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/LabIdParam"
+        - $ref: "#/components/parameters/LabTopicIdParam"
       requestBody:
         required: true
         content:
@@ -1249,55 +1784,30 @@ paths:
               $ref: "#/components/schemas/VLTopic"
       responses:
         "200":
-          description: Topic added
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-  /virtual/lab/{labId}/update/topic/{topicId}:
-    put:
-      tags: [VirtualLab]
-      summary: Update topic in virtual lab
-      parameters:
-        - name: labId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: topicId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-      responses:
-        "200":
           description: Topic updated
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Virtual lab or topic not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /virtual/lab/{labId}/remove/topic/{topicId}:
     delete:
       tags: [VirtualLab]
       summary: Remove topic from virtual lab
+      security:
+        - bearerAuth: []
       parameters:
-        - name: labId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: topicId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/LabIdParam"
+        - $ref: "#/components/parameters/LabTopicIdParam"
       responses:
         "200":
           description: Topic removed
@@ -1305,10 +1815,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Virtual lab or topic not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ------------------------------------------------------------------ Topic
   /topic:
     post:
       tags: [Topic]
-      summary: Create or update topic
+      summary: Create topic (or return the existing one)
+      description: |
+        Topics are identified by (`name`, `departmentName`). If the topic already exists
+        it is returned with status 200 (its `openalexID` is filled in if it had none);
+        otherwise it is created (201).
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -1319,25 +1847,49 @@ paths:
                 name:
                   type: string
                 departmentName:
-                  type: string
+                  $ref: "#/components/schemas/Department"
                 openalexID:
                   type: string
-                contentId:
-                  type: string
-                contentType:
-                  type: string
-                  enum: [article, cast]
-              required: [name, departmentName, contentId, contentType]
+              required: [name, departmentName]
       responses:
-        "200":
-          description: Topic created or updated
+        "201":
+          description: Topic created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Topic"
+                $ref: "#/components/schemas/TopicResult"
+        "200":
+          description: Topic already existed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopicResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     get:
       tags: [Topic]
       summary: List topics
+      responses:
+        "200":
+          description: Topics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Topic"
+  /topic/department/{departmentName}:
+    get:
+      tags: [Topic]
+      summary: Get topics by department
+      parameters:
+        - name: departmentName
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         "200":
           description: Topics
@@ -1360,9 +1912,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Topic"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
     put:
       tags: [Topic]
       summary: Update topic
+      description: Only `name`, `departmentName` and `openalexID` can be changed; other fields are ignored.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/IdParam"
       requestBody:
@@ -1378,70 +1937,254 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Topic"
-  /topic/department/{departmentName}:
-    get:
-      tags: [Topic]
-      summary: Get topics by department
-      parameters:
-        - name: departmentName
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Topics
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Topic"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT returned by `POST /user/login` (`token` field). Only enforced when the server
+        runs with `AUTH_REQUIRED=true`.
   parameters:
     IdParam:
       name: id
       in: path
       required: true
+      description: MongoDB ObjectId (24 hex characters). Malformed ids return 400.
+      schema:
+        type: string
+        pattern: "^[a-fA-F0-9]{24}$"
+    CategoryParam:
+      name: id
+      in: path
+      required: true
+      description: Category name.
+      schema:
+        type: string
+    DepartmentParam:
+      name: id
+      in: path
+      required: true
+      description: Department name (see `Department`).
+      schema:
+        type: string
+    BrightmindIdParam:
+      name: id
+      in: path
+      required: true
+      description: Creator id (`brightmindid`).
+      schema:
+        type: string
+    TokenParam:
+      name: token
+      in: path
+      required: true
+      description: Token from the email link.
+      schema:
+        type: string
+    LabIdParam:
+      name: labId
+      in: path
+      required: true
+      description: Virtual lab ObjectId (24 hex characters). Malformed ids return 400.
+      schema:
+        type: string
+        pattern: "^[a-fA-F0-9]{24}$"
+    InstituteIdParam:
+      name: instituteId
+      in: path
+      required: true
+      description: The institute's `instituteID` value (not the subdocument `_id`).
+      schema:
+        type: string
+    LabTopicIdParam:
+      name: topicId
+      in: path
+      required: true
+      description: The virtual lab topic's subdocument `_id`.
       schema:
         type: string
   responses:
     BadRequest:
-      description: Bad request
+      description: Bad request (malformed id, validation error, malformed JSON / multipart JSON field, unsupported file type)
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Invalid id.
+            message: Invalid id.
+    Unauthorized:
+      description: Missing, invalid or expired token (only when `AUTH_REQUIRED=true`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Authentication required.
+            message: Authentication required.
+    Forbidden:
+      description: The token's user does not match `{id}` (only when `AUTH_REQUIRED=true`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: You can only access your own account.
+            message: You can only access your own account.
     NotFound:
-      description: Not found
+      description: Resource not found
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Not found.
+            message: Not found.
+    Conflict:
+      description: Resource already exists (e.g. duplicate cast title, signup email or virtual lab name)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Resource already exists.
+            message: Resource already exists.
+    PayloadTooLarge:
+      description: Uploaded file exceeds the size limit (1024 MB for videos, 10 MB for images)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: File too large
+            message: File too large
+    TooManyRequests:
+      description: Rate limit exceeded (20 requests per 15 minutes)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: Too many attempts, please try again later.
+            message: Too many attempts, please try again later.
+    BadGateway:
+      description: Upstream AI generation (evaluation or image) failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Failed to generate evaluation
+            message: Failed to generate evaluation
+    InternalServerError:
+      description: Unexpected server error (e.g. email could not be sent)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
-    MessageResponse:
+    Error:
       type: object
-      properties:
-        message:
-          type: string
-        response:
-          type: string
-    ErrorResponse:
-      type: object
+      description: Error body. `error` and `message` carry the same text (backward compatibility).
       properties:
         error:
           type: string
         message:
           type: string
-        details:
-          type: object
+      required: [error, message]
+    MessageResponse:
+      type: object
+      description: Success message; endpoints use either `message` or `response`.
+      properties:
+        message:
+          type: string
+        response:
+          type: string
+    CreatedResponse:
+      type: object
+      properties:
+        response:
+          type: string
+        id:
+          type: string
+          description: ObjectId of the created resource.
+      required: [response, id]
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        db:
+          type: string
+          enum: [up, down]
+    Department:
+      type: string
+      enum:
+        - Medicine
+        - SocialSciences
+        - Engineering
+        - ArtsandHumanities
+        - ComputerScience
+        - BiochemistryGeneticsandMolecularBiology
+        - AgriculturalandBiologicalSciences
+        - EnvironmentalScience
+        - MaterialsScience
+        - PhysicsandAstronomy
+        - BusinessManagementandAccounting
+        - HealthProfessions
+        - EconomicsEconometricsandFinance
+        - Psychology
+        - Chemistry
+        - EarthandPlanetarySciences
+        - Neuroscience
+        - Mathematics
+        - ImmunologyandMicrobiology
+        - DecisionSciences
+        - Energy
+        - Nursing
+        - PharmacologyToxicologyandPharmaceutics
+        - Dentistry
+        - ChemicalEngineering
+        - Veterinary
+    Objective:
+      type: string
+      enum: [Follower, Explorer, Deep Learner, Researcher, Career]
+    Role:
+      type: string
+      enum: [College Student, Professor, Researcher, Learning Enthusiast, PhD Student]
     Rating:
       type: object
       properties:
         value:
           type: number
+          minimum: 0
+          maximum: 10
         count:
           type: integer
+    RatingAction:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: ["+", "-"]
+      required: [action]
+    RatingUpdateResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        rating:
+          $ref: "#/components/schemas/Rating"
     Evaluation:
       type: object
       properties:
@@ -1491,6 +2234,63 @@ components:
           type: string
         subtitleurl:
           type: string
+    CastCreate:
+      type: object
+      description: Content of the `cast` multipart field for `POST /cast`.
+      properties:
+        title:
+          type: string
+          maxLength: 85
+          description: Must be unique (409 otherwise).
+        brightmindid:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        department:
+          allOf:
+            - $ref: "#/components/schemas/Department"
+          description: Optional; left empty, the cast is stored with `Pending Department`.
+        topic:
+          type: string
+          description: Optional; when omitted the topic (and department) are generated in the background.
+        dateadded:
+          type: string
+          format: date-time
+      required: [title, brightmindid, university, category, visibility]
+    CastUpdate:
+      type: object
+      description: Content of the `cast` multipart field for `PUT /cast/{id}`. All fields optional.
+      properties:
+        title:
+          type: string
+          maxLength: 85
+        description:
+          type: string
+        brightmindid:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        castimageurl:
+          type: string
+        department:
+          $ref: "#/components/schemas/Department"
+        topic:
+          type: string
+        dateadded:
+          type: string
+          format: date-time
     Article:
       type: object
       properties:
@@ -1530,13 +2330,10 @@ components:
       properties:
         title:
           type: string
-        department:
-          type: string
-        brightmindid:
-          type: string
+          maxLength: 85
         description:
           type: string
-        articleimageurl:
+        brightmindid:
           type: string
         university:
           type: string
@@ -1546,26 +2343,57 @@ components:
           type: string
         link:
           type: string
-        duration:
-          type: number
+        department:
+          allOf:
+            - $ref: "#/components/schemas/Department"
+          description: Optional; left empty, the article is stored with `Pending Department`.
         topic:
           type: string
+          description: Optional; when omitted the topic (and department) are generated in the background.
+        duration:
+          type: number
+          description: Optional; computed from the description when omitted.
+        dateadded:
+          type: string
+          format: date-time
       required:
         - title
-        - department
-        - brightmindid
         - description
-        - articleimageurl
+        - brightmindid
         - university
         - category
         - visibility
-        - duration
-        - topic
     ArticleUpdate:
-      allOf:
-        - $ref: "#/components/schemas/ArticleCreate"
+      type: object
+      description: Partial update; all fields optional.
+      properties:
+        title:
+          type: string
+          maxLength: 85
+        description:
+          type: string
+        brightmindid:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        department:
+          $ref: "#/components/schemas/Department"
+        topic:
+          type: string
+        duration:
+          type: number
+        dateadded:
+          type: string
+          format: date-time
     User:
       type: object
+      description: Public user representation (credentials and tokens are never returned).
       properties:
         _id:
           type: string
@@ -1574,7 +2402,7 @@ components:
         username:
           type: string
         role:
-          type: string
+          $ref: "#/components/schemas/Role"
         university:
           type: string
         profilePictureUrl:
@@ -1603,6 +2431,69 @@ components:
           type: array
           items:
             type: string
+    UserSignup:
+      type: object
+      description: Content of the `user` multipart field for `POST /user/signup`.
+      properties:
+        email:
+          type: string
+          format: email
+          description: Must be unique (409 otherwise) and have a valid domain.
+        password:
+          type: string
+          format: password
+        username:
+          type: string
+        role:
+          $ref: "#/components/schemas/Role"
+        university:
+          type: string
+          description: Only stored for the Professor, PhD Student and Researcher roles.
+        objective:
+          $ref: "#/components/schemas/Objective"
+      required: [email, password, username, role]
+    UserUpdate:
+      type: object
+      description: Fields a user may change on their own profile. All optional.
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        role:
+          $ref: "#/components/schemas/Role"
+        university:
+          type: string
+        evaluation_list:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationItem"
+        preferences:
+          type: array
+          items:
+            $ref: "#/components/schemas/Preference"
+        tracking:
+          $ref: "#/components/schemas/UserTracking"
+        castPublications:
+          type: array
+          items:
+            type: string
+        articlePublications:
+          type: array
+          items:
+            type: string
+    PasswordReset:
+      type: object
+      properties:
+        password:
+          type: string
+          format: password
+          minLength: 4
+        confirmPassword:
+          type: string
+          format: password
+      required: [password, confirmPassword]
     EvaluationItem:
       type: object
       properties:
@@ -1630,12 +2521,15 @@ components:
       properties:
         contentid:
           type: string
+          nullable: true
         type:
           type: string
+          nullable: true
           enum: [cast, article]
         bookmarkedAt:
           type: string
           format: date-time
+          nullable: true
         content:
           nullable: true
           oneOf:
@@ -1647,7 +2541,13 @@ components:
         message:
           type: string
         bookmark:
-          $ref: "#/components/schemas/Bookmark"
+          type: object
+          properties:
+            contentid:
+              type: string
+            type:
+              type: string
+              enum: [cast, article]
     Preference:
       type: object
       properties:
@@ -1686,6 +2586,16 @@ components:
           type: string
         iconurl:
           type: string
+    UniversityInput:
+      type: object
+      properties:
+        name:
+          type: string
+        displayedName:
+          type: string
+        iconurl:
+          type: string
+          description: Only used by `PUT` when no icon file is uploaded.
     VirtualLab:
       type: object
       properties:
@@ -1713,6 +2623,29 @@ components:
           type: string
         colorcode:
           type: string
+    VirtualLabInput:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Must be unique (409 otherwise).
+        followers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLUserRef"
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLUserRef"
+        topics:
+          type: array
+          items:
+            $ref: "#/components/schemas/VLTopic"
+        colorcode:
+          type: string
+        iconurl:
+          type: string
+          description: Only used by `PUT` when no icon file is uploaded.
     VLUserRef:
       type: object
       properties:
@@ -1728,6 +2661,9 @@ components:
     VLTopic:
       type: object
       properties:
+        _id:
+          type: string
+          readOnly: true
         name:
           type: string
         gage:
@@ -1756,6 +2692,24 @@ components:
             properties:
               content:
                 type: string
+    VLTopicInput:
+      type: object
+      properties:
+        name:
+          type: string
+        gage:
+          type: number
+          default: 0
+        institutes:
+          type: array
+          items:
+            type: object
+            properties:
+              instituteId:
+                type: string
+        description:
+          type: string
+      required: [name]
     Topic:
       type: object
       properties:
@@ -1798,27 +2752,47 @@ components:
                 lastFetchedAt:
                   type: string
                   format: date-time
+                  nullable: true
                 lastWorksFetchedAt:
                   type: string
                   format: date-time
+                  nullable: true
             wikipedia:
               type: object
               properties:
                 title:
                   type: string
+                  nullable: true
                 views12Months:
                   type: number
                 lastFetchedAt:
                   type: string
                   format: date-time
+                  nullable: true
             lastComputedAt:
               type: string
               format: date-time
+              nullable: true
             lastError:
               type: string
+              nullable: true
             backoffUntil:
               type: string
               format: date-time
+              nullable: true
+    TopicResult:
+      type: object
+      properties:
+        message:
+          type: string
+        topic:
+          $ref: "#/components/schemas/Topic"
     TopicUpdate:
       type: object
-      additionalProperties: true
+      properties:
+        name:
+          type: string
+        departmentName:
+          $ref: "#/components/schemas/Department"
+        openalexID:
+          type: string

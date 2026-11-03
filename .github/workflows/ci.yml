@@ -1,19 +1,69 @@
-name: ci tests
+name: CI
 
+# Runs on every push. Also called by deploy.yml so a deployment always ships a tested commit.
 on:
-  pull_request:
-    branches: [main]
+  push:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow is "Deploy" when called from deploy.yml, so deployments never cancel each other's CI.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    name: Lint & test
     runs-on: ubuntu-latest
-    env:
-      MONGODB_URI: ${{ secrets.MONGODB_URI_TEST }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
+
+      - name: Cache MongoDB binaries (mongodb-memory-server)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - run: npm ci
-      - run: npm test
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run test:coverage
+
+  docker:
+    name: Docker build & smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create CI environment file
+        run: |
+          {
+            echo "JWT_SECRET=ci-only-secret"
+            echo "PUBLIC_BASE_URL=http://localhost:3000"
+          } > .env
+
+      - name: Build and start the stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+
+      - name: Smoke test
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:3000/health
+          curl --fail --silent --show-error --output /dev/null http://127.0.0.1:3000/topic
+          curl --fail --silent --show-error --output /dev/null \
+            http://127.0.0.1:3000/backend/media/verification_email/BrightMinds_icon.png
+
+      - name: Logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,57 @@
+# Production stack: API + MongoDB + Redis. Usage: `docker compose up -d --build --wait`.
+# Secrets come from .env (see .env.example). Media is persisted in ./backend/media on the host.
+name: brightminds
+
+services:
+  api:
+    build: .
+    image: brightminds-api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Bundled mongo unless COMPOSE_MONGODB_URI is set (MONGODB_URI in .env is ignored here).
+      MONGODB_URI: ${COMPOSE_MONGODB_URI:-mongodb://mongo:27017/brightminds}
+      REDIS_URL: redis://redis:6379
+      # Behind the TLS reverse proxy: needed for real client IPs (rate limiting).
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    ports:
+      # Bound to localhost by default: expose it through a TLS reverse proxy.
+      - '${API_BIND:-127.0.0.1}:${API_PORT:-3000}:3000'
+    volumes:
+      - ./backend/media:/app/backend/media
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mongo-data:
+  redis-data:

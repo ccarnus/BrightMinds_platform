@@ -1,0 +1,5 @@
+# Uploaded/generated files are never committed.
+*
+!.gitignore
+!readme.txt
+!README.txt

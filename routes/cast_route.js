@@ -1,28 +1,23 @@
 const express = require('express');
+const castController = require('../controllers/cast_controller');
+const { authenticate } = require('../middleware/auth');
+const upload = require('../middleware/upload');
+
 const router = express.Router();
-const cast_controller = require('../controllers/cast_controller.js');
-const auth = require('../backend/auth.js');
-const multer = require('../backend/multer-config_cast.js');
 
-router.post("/", multer, cast_controller.createCast);
-router.get("/", cast_controller.getAllCast);
-router.get('/:id', cast_controller.getOneCast);
-router.put('/:id', multer, cast_controller.updateOneCast);
-router.delete('/:id',  cast_controller.deleteOneCast);
-router.get('/category/:id', cast_controller.getAllCastByCategory);
-router.get('/department/:id', cast_controller.getAllCastByDepartment);
-router.get("/brightmindid/:id", cast_controller.getAllCastByBrightmindid);
-router.get("/evaluation/:id",cast_controller.getEvaluationForCast);
-router.get('/all/simplified', cast_controller.getSimplifiedCast);
-
-//rating
-router.get('/:id/rating', cast_controller.getCastRating);
-router.post('/:id/rating', cast_controller.updateCastRating);
-//trending
-router.get('/trending/right/now', cast_controller.getCastTrending);
-//by department
-router.get('/department/:id', cast_controller.getAllCastByDepartment);
-//Most popular departments
-router.get('/popular/department', cast_controller.getPopularDepartment);
+router.post('/', authenticate, upload.castVideo, castController.createCast);
+router.get('/', castController.getAllCast);
+router.get('/all/simplified', castController.getSimplifiedCast);
+router.get('/trending/right/now', castController.getCastTrending);
+router.get('/popular/department', castController.getPopularDepartment);
+router.get('/category/:id', castController.getAllCastByCategory);
+router.get('/department/:id', castController.getAllCastByDepartment);
+router.get('/brightmindid/:id', castController.getAllCastByBrightmindid);
+router.get('/evaluation/:id', castController.getEvaluationForCast);
+router.get('/:id', castController.getOneCast);
+router.put('/:id', authenticate, upload.castVideo, castController.updateOneCast);
+router.delete('/:id', authenticate, castController.deleteOneCast);
+router.get('/:id/rating', castController.getCastRating);
+router.post('/:id/rating', authenticate, castController.updateCastRating);
 
 module.exports = router;

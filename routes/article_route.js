@@ -1,20 +1,20 @@
 const express = require('express');
-const router = express.Router();
-const article_controller = require('../controllers/article_controller.js');
+const articleController = require('../controllers/article_controller');
+const { authenticate } = require('../middleware/auth');
 
-router.post("/", article_controller.createArticle);
-router.get("/", article_controller.getAllArticle);
-router.get('/:id', article_controller.getOneArticle);
-router.put('/:id', article_controller.updateOneArticle);
-router.delete('/:id',  article_controller.deleteOneArticle);
-router.get('/category/:id', article_controller.getAllArticleByCategory);
-router.get('/department/:id', article_controller.getAllArticleByDepartment);
-router.get("/brightmindid/:id", article_controller.getAllArticleByBrightmindid);
-router.get("/evaluation/:id",article_controller.getEvaluationForArticle);
-//grading
-router.get('/:id/rating', article_controller.getArticleRating);
-router.post('/:id/rating', article_controller.updateArticleRating);
-//trending
-router.get('/trending/right/now', article_controller.getArticleTrending);
+const router = express.Router();
+
+router.post('/', authenticate, articleController.createArticle);
+router.get('/', articleController.getAllArticle);
+router.get('/trending/right/now', articleController.getArticleTrending);
+router.get('/category/:id', articleController.getAllArticleByCategory);
+router.get('/department/:id', articleController.getAllArticleByDepartment);
+router.get('/brightmindid/:id', articleController.getAllArticleByBrightmindid);
+router.get('/evaluation/:id', articleController.getEvaluationForArticle);
+router.get('/:id', articleController.getOneArticle);
+router.put('/:id', authenticate, articleController.updateOneArticle);
+router.delete('/:id', authenticate, articleController.deleteOneArticle);
+router.get('/:id/rating', articleController.getArticleRating);
+router.post('/:id/rating', authenticate, articleController.updateArticleRating);
 
 module.exports = router;

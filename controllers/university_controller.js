@@ -1,118 +1,65 @@
-const University = require('../models/university_model.js');
-const fs = require('fs');
+const University = require('../models/university_model');
+const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
+const { assertObjectId, badRequest, notFound, parseJsonField, pick } = require('../utils/http');
 
-exports.createUniversity = (req, res, next) => {
+const FIELDS = ['name', 'displayedName'];
 
-        const url = "https://api.brightmindsresearch.com";
-        req.body.university = JSON.parse(req.body.university);
-        const university = new University({
-            name: req.body.university.name,
-            displayedName: req.body.university.displayedName,
-            iconurl: url + '/backend/media/university_icon/' + req.file.filename,
-        });
-        university.save().then(
-            () => {
-                res.status(201).json({response:'University Created.'})
-            }
-        ).catch((error) => {
-            res.status(400).json({
-                error: error
-            });
-        });
-}
-
-exports.getAllUniversity = async (req, res, next) => {
-    try {
-      const universities = await University.find();
-  
-      res.status(200).json(universities);
-    } catch (error) {
-      res.status(500).json({ error: 'An error occurred.' });
-    }
-  };
-  
-  exports.getOneUniversity = (req, res, next) => {
-    University.findOne({ _id:req.params.id })
-        .then((university) => {
-            if (!university) {
-                return res.status(404).json({ message: 'University not found.' });
-            }
-            res.status(200).json(university);
-        })
-        .catch((error) => {
-            res.status(500).json({
-                error: 'An error occurred.',
-                details: error
-            });
-        });
+const findUniversityOr404 = async (id) => {
+  assertObjectId(id);
+  const university = await University.findById(id);
+  if (!university) throw notFound('University not found.');
+  return university;
 };
 
-exports.updateOneUniversity = (req, res, next) => {
-    let university = new University({_id: req.params._id});
-    if (req.file){
-        const url = "https://api.brightmindsresearch.com";
-        req.body.university = JSON.parse(req.body.university);
-        university = {
-            _id:req.params.id,
-            name:req.body.university.name,
-            iconurl: url + '/backend/media/university_icon/' + req.file.filename,
-            displayedName: req.body.university.displayedName
-        };
-    } else {university = {
-            _id:req.params.id,
-            name: req.body.name,
-            iconurl: req.body.iconurl,
-            displayedName: req.body.displayedName
-        };
-    }
-    University.updateOne({_id:req.params.id}, university)
-    .then(() => {
-        res.status(201).json({
-            response: "university updated"
-        })})
-    .catch((error) => {
-        res.status(400).json({
-            error: error
-        });
-    });
-}
-
-
-exports.deleteOneUniversity = (req, res, next) => {
-    University.findOne({_id:req.params.id}).then(
-        (university) => {
-            const filename = university.iconurl.split('/media/university_icon/')[1];
-            fs.unlink('./backend/media/university_icon/' + filename, () => {
-                console.log('./backend/media/university_icon/' + filename);
-                University.deleteOne({_id:req.params.id}).then(() => {
-                    res.status(200).json({
-                        response: 'University Deleted'
-                    });
-                }).catch((error) => {
-                    res.status(404).json({
-                        error: error
-                    });
-                });
-            });
-        }
-    );
-}
-
-exports.getOneUniversityByName = (req, res, next) => {
-    const universityName = req.params.id;
-
-    University.findOne({ name: universityName })
-        .then((university) => {
-            if (!university) {
-                return res.status(404).json({ message: 'University not found.' });
-            }
-            res.status(200).json(university);
-        })
-        .catch((error) => {
-            res.status(500).json({
-                error: 'An error occurred.',
-                details: error
-            });
-        });
+/** Multipart: `icon` file + `university` JSON field ({ name, displayedName }). */
+exports.createUniversity = async (req, res) => {
+  if (!req.file) throw badRequest('An icon file is required (field "icon").');
+  const data = parseJsonField(req.body, 'university');
+  await University.create({
+    ...pick(data, FIELDS),
+    iconurl: mediaUrl(MEDIA_DIRS.universityIcons, req.file.filename),
+  });
+  res.status(201).json({ response: 'University Created.' });
 };
 
+exports.getAllUniversity = async (req, res) => {
+  res.status(200).json(await University.find());
+};
+
+exports.getOneUniversity = async (req, res) => {
+  res.status(200).json(await findUniversityOr404(req.params.id));
+};
+
+exports.getOneUniversityByName = async (req, res) => {
+  const university = await University.findOne({ name: req.params.id });
+  if (!university) throw notFound('University not found.');
+  res.status(200).json(university);
+};
+
+/** Accepts multipart (`icon` + `university` JSON) or a flat JSON body. */
+exports.updateOneUniversity = async (req, res) => {
+  const university = await findUniversityOr404(req.params.id);
+  const data =
+    req.body.university !== undefined ? parseJsonField(req.body, 'university') : req.body;
+
+  const previousIconUrl = university.iconurl;
+  Object.assign(university, pick(data, FIELDS));
+  if (req.file) {
+    university.iconurl = mediaUrl(MEDIA_DIRS.universityIcons, req.file.filename);
+  } else if (typeof data.iconurl === 'string') {
+    university.iconurl = data.iconurl;
+  }
+  await university.save();
+
+  if (req.file) {
+    await deleteMediaByUrl(previousIconUrl, MEDIA_DIRS.universityIcons);
+  }
+  res.status(201).json({ response: 'university updated' });
+};
+
+exports.deleteOneUniversity = async (req, res) => {
+  const university = await findUniversityOr404(req.params.id);
+  await deleteMediaByUrl(university.iconurl, MEDIA_DIRS.universityIcons);
+  await University.deleteOne({ _id: university._id });
+  res.status(200).json({ response: 'University Deleted' });
+};

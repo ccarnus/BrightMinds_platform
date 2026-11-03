@@ -1,14 +1,15 @@
 const express = require('express');
-const router = express.Router();
-const university_controller = require('../controllers/university_controller.js');
-const auth = require('../backend/auth.js');
-const multer = require('../backend/multer-config_university.js');
+const universityController = require('../controllers/university_controller');
+const { authenticate } = require('../middleware/auth');
+const upload = require('../middleware/upload');
 
-router.post("/", multer, university_controller.createUniversity);
-router.get("/", university_controller.getAllUniversity);
-router.get("/:id", university_controller.getOneUniversity);
-router.put('/:id', multer, university_controller.updateOneUniversity);
-router.delete('/:id', university_controller.deleteOneUniversity);
-router.get("/by/name/:id",university_controller.getOneUniversityByName);
+const router = express.Router();
+
+router.post('/', authenticate, upload.universityIcon, universityController.createUniversity);
+router.get('/', universityController.getAllUniversity);
+router.get('/by/name/:id', universityController.getOneUniversityByName);
+router.get('/:id', universityController.getOneUniversity);
+router.put('/:id', authenticate, upload.universityIcon, universityController.updateOneUniversity);
+router.delete('/:id', authenticate, universityController.deleteOneUniversity);
 
 module.exports = router;
