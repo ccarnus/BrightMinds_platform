@@ -1,17 +1,15 @@
 name: CI
 
-# Runs on every push. Also called by deploy.yml so a deployment always ships a tested commit.
+# Runs on every push.
 on:
   push:
   workflow_dispatch:
-  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  # github.workflow is "Deploy" when called from deploy.yml, so deployments never cancel each other's CI.
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -79,4 +79,5 @@ npm run check          # lint + format check + tests — run before declaring wo
 - Media URLs stored in MongoDB embed `PUBLIC_BASE_URL`; changing it doesn't rewrite existing documents.
 - `services/topic_indicator_computor.js` skips network calls when `config.isTest`; its unit test
   sets `NODE_ENV=development` and mocks `axios` to exercise them.
-- Deployment: `docker compose` on a self-hosted server via `.github/workflows/deploy.yml` (manual).
+- Deployment: home server (`ssh homeboy`, LAN only), service `brightminds` in `/opt/homeboy/compose.yml`
+  behind Caddy at `https://api.greenlights.us`; push to `main` then run `/opt/homeboy/deploy.sh`.

@@ -25,7 +25,7 @@ info:
 servers:
   - url: http://localhost:3000
     description: Local development
-  - url: https://api.brightmindsresearch.com
+  - url: https://api.greenlights.us
     description: Production
 tags:
   - name: System

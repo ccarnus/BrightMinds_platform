@@ -53,57 +53,29 @@ tests/         unit + integration tests                    backend/media/  uploa
 
 Working with Claude Code: conventions and workflows are in [`CLAUDE.md`](CLAUDE.md).
 
-## CI / CD
+## CI
 
-- **CI** (`.github/workflows/ci.yml`) — every push: lint, format check, tests with coverage, then
-  builds the Docker image and smoke-tests the full stack (`/health`).
-- **Deploy** (`.github/workflows/deploy.yml`) — manual (_Actions → Deploy → Run workflow_): reruns
-  CI, then SSHes into the server, checks out the commit and runs `docker compose up -d --build`.
+`.github/workflows/ci.yml` — every push: lint, format check, tests with coverage, then builds the
+Docker image and smoke-tests the full stack (`/health`).
 
 ## Production
 
-```bash
-git clone git@github.com:ccarnus/brightminds.git && cd brightminds
-cp .env.example .env                  # fill in production values
-sudo chown -R 1000:1000 backend/media # the container runs as uid 1000 and writes uploads here
-docker compose up -d --build --wait
-```
+Live at `https://api.greenlights.us` on the home server (Homeboy Network repo/folder):
 
-The stack runs the API (bound to `127.0.0.1:3000`), MongoDB and Redis. Uploaded media is stored
-in `./backend/media` on the host; MongoDB and Redis data in Docker volumes.
+- Clone in `/opt/homeboy/repos/brightminds`; services `brightminds`, `brightminds-mongo`,
+  `brightminds-redis` in `/opt/homeboy/compose.yml`; Caddy terminates TLS.
+- Secrets in `/opt/homeboy/brightminds.env` (`JWT_SECRET`, `OPENAI_API_KEY`, `EMAIL_USER`,
+  `EMAIL_PWD`, `OPENAI_ALERT_EMAIL_TO`); `PUBLIC_BASE_URL` etc. are set in `compose.yml`.
+- Uploads in the clone's `backend/media` (bind mount); MongoDB and Redis in Docker volumes.
+- Deploy: push to `main`, then `/opt/homeboy/deploy.sh` on the server.
+
+`docker-compose.yml` in this repo is the standalone equivalent (used by CI).
 
 ## Remaining actions
 
-**Security — do first**
-
-- [ ] **Rotate the MongoDB Atlas password**: it was committed in `app.js` (removed now, but still
-      in git history). Optionally purge history with `git filter-repo`.
-- [ ] Remove the old AWS secrets from GitHub (`AWS_*`, `HOST_IP`, `SSH_KEY`, `MONGODB_URI_TEST`)
-      and decommission the EC2/PM2 instance once the new server is live.
-
-**Server**
-
-- [ ] Linux host with Docker Engine + Compose plugin; CPU with AVX (required by MongoDB ≥ 5).
-- [ ] Deploy user in the `docker` group, SSH key-only login; firewall allowing only 22/80/443.
-- [ ] Clone the repo (read-only GitHub deploy key) into the deploy path, then
-      `sudo chown -R 1000:1000 backend/media` (uploads fail with EACCES otherwise).
-- [ ] Create `.env` from `.env.example`: `JWT_SECRET` (`openssl rand -hex 32`),
-      `PUBLIC_BASE_URL=https://api.brightmindsresearch.com`, `OPENAI_API_KEY`, `EMAIL_PWD`,
-      `OPENAI_ALERT_EMAIL_TO`. To stay on Atlas, set `COMPOSE_MONGODB_URI` (not `MONGODB_URI`).
-- [ ] Reverse proxy with TLS for `api.brightmindsresearch.com` → `127.0.0.1:3000`
-      (Caddy, or nginx + certbot). Allow request bodies ≥ 1 GB (video uploads). Point DNS to the server.
-- [ ] Migrate data: copy the old server's `backend/media/*` into `./backend/media`
-      (`chown -R 1000:1000`), and `mongodump`/`mongorestore` if leaving Atlas.
-- [ ] Cutover: stop new uploads on the old server and wait for its Bull queues to drain — jobs
-      left in the old Redis are lost and those casts/articles would stay "Pending".
 - [ ] Backups: scheduled `mongodump` + copy of `backend/media` off the server.
-
-**GitHub**
-
-- [ ] Create the `production` environment (Settings → Environments), optionally with required reviewers.
-- [ ] Add environment secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (private key),
-      `DEPLOY_PATH` (repo path on the server), optional `DEPLOY_PORT`.
-- [ ] Run the _Deploy_ workflow once and check `https://api.brightmindsresearch.com/health`.
+- [ ] Remove the old AWS secrets from GitHub (`AWS_*`, `HOST_IP`, `SSH_KEY`, `MONGODB_URI_TEST`)
+      and decommission the EC2/PM2 instance and MongoDB Atlas cluster.
 
 **Application**
 

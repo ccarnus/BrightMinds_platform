@@ -22,7 +22,7 @@ const config = {
   redisUrl: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
   // Public base URL used to build media links stored in the database.
   publicUrl: stripTrailingSlash(process.env.PUBLIC_BASE_URL || `http://localhost:${port}`),
-  websiteUrl: process.env.WEBSITE_URL || 'https://www.brightmindsresearch.com',
+  websiteUrl: process.env.WEBSITE_URL || 'https://greenlights.us',
   mediaRoot: path.resolve(process.env.MEDIA_ROOT || path.join(__dirname, '..', 'backend', 'media')),
   corsOrigin: process.env.CORS_ORIGIN || '*',
   // Number of reverse proxies in front of the app (needed for correct client IPs).
@@ -34,7 +34,7 @@ const config = {
     required: process.env.AUTH_REQUIRED === 'true',
   },
   mail: {
-    user: process.env.EMAIL_USER || 'clement.carnus@brightmindsresearch.com',
+    user: process.env.EMAIL_USER,
     password: process.env.EMAIL_PWD,
   },
   alerts: {
