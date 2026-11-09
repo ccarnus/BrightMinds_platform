@@ -33,6 +33,26 @@ All variables are documented in [`.env.example`](.env.example). Required in prod
 With docker compose, `MONGODB_URI` is set by the stack (bundled MongoDB); use
 `COMPOSE_MONGODB_URI` to point at an external database instead.
 
+## AI processing
+
+New casts and articles are enriched in the background (`services/ai_pipeline.js`):
+transcript + subtitles (casts), quiz question + department + image brief (one structured call),
+OpenAlex topic, illustration. Each step is saved as soon as it succeeds and skipped when its
+output exists, so retries resume where they stopped.
+
+- **Failures:** OpenAI unreachable / rate-limited → retried 4 times with backoff. Bad key, no
+  credit or unknown model → alert email (`OPENAI_ALERT_EMAIL_TO`) and OpenAI calls paused 1 h.
+  Item-specific errors (moderation...) → item marked `failed` after `AI_MAX_ATTEMPTS` days.
+- **Daily retry** (`AI_RETRY_CRON`, default 03:00 server time) re-queues everything still missing
+  outputs. State per item: `processing` field (`pending` / `processing` / `done` / `failed`).
+- **Commands** (on the server: `docker compose exec brightminds npm run ai -- <command>`):
+  `check` (key, models, parameters) · `status` (unprocessed items and last error) ·
+  `retry` (queue now) · `retry --failed` (also items that gave up).
+- **Models** (env overrides): `OPENAI_CHAT_MODEL` (`gpt-6.1-terra`, with
+  `OPENAI_REASONING_EFFORT=low`), `OPENAI_IMAGE_MODEL` (`gpt-image-2.6-flare`,
+  `OPENAI_IMAGE_QUALITY=medium`), `OPENAI_TRANSCRIPTION_MODEL` (`whisper-1`: the only model
+  with timestamps, so the only one producing subtitles; other models give text only).
+
 ## API
 
 - Contract: [`openapi.yaml`](openapi.yaml) (a test fails if a route is missing from it).
@@ -81,6 +101,5 @@ Live at `https://api.greenlights.us` on the home server (Homeboy Network repo/fo
 
 - [ ] Update the mobile app to send `Authorization: Bearer <token>` on protected routes
       (see `security` in `openapi.yaml`), then set `AUTH_REQUIRED=true`.
-- [ ] Review OpenAI models (`gpt-4`, `dall-e-3`, `whisper-1` by default are older models; check
-      OpenAI's deprecation page). Override with `OPENAI_CHAT_MODEL` / `OPENAI_IMAGE_MODEL` /
-      `OPENAI_TRANSCRIPTION_MODEL`.
+- [ ] Before **2027-02-26** (`whisper-1` shutdown): switch `OPENAI_TRANSCRIPTION_MODEL` to its
+      successor. Check whether it returns timestamps; if not, subtitles need another source.

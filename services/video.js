@@ -3,16 +3,20 @@ const ffmpeg = require('fluent-ffmpeg');
 ffmpeg.setFfprobePath(require('@ffprobe-installer/ffprobe').path);
 
 /**
- * Reads a video's duration. Durations are stored in minutes (same unit as articles).
+ * Reads a video's duration in seconds (0 if unknown).
  * @param {string} videoFilePath
  * @returns {Promise<number>}
  */
-const getVideoDurationInMinutes = (videoFilePath) =>
+const getVideoDurationInSeconds = (videoFilePath) =>
   new Promise((resolve, reject) => {
     ffmpeg.ffprobe(videoFilePath, (error, metadata) => {
       if (error) return reject(error);
-      return resolve((metadata.format.duration || 0) / 60);
+      return resolve(Number(metadata.format.duration) || 0);
     });
   });
 
-module.exports = { getVideoDurationInMinutes };
+/** Durations are stored in minutes (same unit as articles). */
+const getVideoDurationInMinutes = async (videoFilePath) =>
+  (await getVideoDurationInSeconds(videoFilePath)) / 60;
+
+module.exports = { getVideoDurationInMinutes, getVideoDurationInSeconds };

@@ -1,168 +1,125 @@
-// Assigns a department and an OpenAlex topic to casts/articles created without them (background jobs).
+// Picks the OpenAlex topic (within the content's department) that best matches a cast/article.
 const axios = require('axios');
 const config = require('../config');
-const { departmentNames, departmentIdByName } = require('../lists/departments');
-const { getOpenAIClient } = require('./openai');
-const { createTopicIfNotExist, PENDING_DEPARTMENT } = require('./topics');
-const { reportOpenAIAuthError, reportOpenAIMissingApiKey } = require('./openai_alerts');
+const { departmentIdByName } = require('../lists/departments');
+const { AIError, callOpenAI, classifyError } = require('./openai');
 
 const OPENALEX_MAX_PAGES = 25;
+const TOPICS_CACHE_MS = 24 * 60 * 60 * 1000;
+const topicsCache = new Map(); // fieldId -> { at, topics }
+
+const SYSTEM_PROMPT =
+  'You classify research content into the OpenAlex topic taxonomy. You receive the list of ' +
+  'topics of one academic field ("<id>: <name>" per line), then a piece of content. Choose the ' +
+  'single topic that best describes what the research is about (its subject, not its method ' +
+  'or context) and answer with its id exactly as listed.';
 
 const getFieldId = (departmentName) => departmentIdByName[departmentName] || null;
 
 const fetchAllOpenAlexTopics = async (fieldId) => {
+  const cached = topicsCache.get(fieldId);
+  if (cached && Date.now() - cached.at < TOPICS_CACHE_MS) return cached.topics;
+
   const perPage = 200;
   let topics = [];
-  for (let page = 1; page <= OPENALEX_MAX_PAGES; page++) {
-    const response = await axios.get('https://api.openalex.org/topics', {
-      params: {
-        filter: `field.id:${fieldId}`,
-        per_page: perPage,
-        select: 'id,display_name',
-        page,
-      },
-      timeout: 30000,
-    });
-    const results = response.data?.results || [];
-    topics = topics.concat(results);
-    if (results.length < perPage) break;
-  }
-  return topics;
-};
-
-const askModel = async (operation, systemPrompt, userPrompt) => {
-  const client = getOpenAIClient();
-  if (!client) {
-    await reportOpenAIMissingApiKey({ operation });
-    throw new Error('OpenAI API key not configured. Set OPENAI_API_KEY.');
-  }
   try {
-    const response = await client.chat.completions.create({
-      model: config.openai.chatModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      max_tokens: 50,
-      temperature: 0.3,
-    });
-    return response.choices[0].message.content.trim().replace(/^\d+\.\s*/, '');
+    for (let page = 1; page <= OPENALEX_MAX_PAGES; page++) {
+      const response = await axios.get('https://api.openalex.org/topics', {
+        params: {
+          filter: `field.id:${fieldId}`,
+          per_page: perPage,
+          select: 'id,display_name',
+          page,
+        },
+        timeout: 30000,
+      });
+      const results = response.data?.results || [];
+      topics = topics.concat(results);
+      if (results.length < perPage) break;
+    }
   } catch (error) {
-    await reportOpenAIAuthError(error, { operation });
-    throw error;
+    // OpenAlex being down must not count against the item: retry like an OpenAI outage.
+    const kind = classifyError(error) === 'content' ? 'content' : 'transient';
+    throw new AIError(kind, `OpenAlex topics request failed: ${error.message}`, {
+      operation: 'fetchOpenAlexTopics',
+      cause: error,
+    });
   }
-};
-
-/** Returns the list entry matching `answer` (case-insensitive, quotes ignored), or null. */
-const matchFromList = (answer, list) => {
-  const normalize = (value) =>
-    String(value)
-      .trim()
-      .replace(/^["']|["']$/g, '')
-      .toLowerCase();
-  const target = normalize(answer);
-  return list.find((item) => normalize(item) === target) || null;
-};
-
-/** Uses the chat model to choose the best matching topic name from the OpenAlex list. */
-const determineBestTopic = async (description, topics, contentType) => {
-  if (config.isTest) {
-    return topics.length ? topics[0].display_name : null;
+  if (!topics.length) {
+    throw new AIError('transient', `OpenAlex returned no topics for field ${fieldId}.`, {
+      operation: 'fetchOpenAlexTopics',
+    });
   }
-  const names = topics.map((topic) => topic.display_name);
-  const prompt =
-    `I have a ${contentType} with the following description:\n\n"${description}"\n\n` +
-    'Here is a list of topics from the field (one per line). Based on the description, which one ' +
-    `of these topics best matches the ${contentType}? Respond with only the topic name exactly as ` +
-    `it appears in the list, without any numbering or extra characters.\n\nTopics:\n${names.join('\n')}`;
-  const answer = await askModel(
-    'determineBestTopic',
-    'You are an expert in categorizing research topics.',
-    prompt
-  );
-  return matchFromList(answer, names) || answer;
-};
-
-/** Uses the chat model to choose a department; throws if the answer is not a known department. */
-const determineDepartmentForContent = async (description) => {
-  if (config.isTest) {
-    return departmentNames[0];
-  }
-  const prompt =
-    `I have a piece of academic content with the following description:\n\n"${description}"\n\n` +
-    'Based on the content, please choose the best matching department from the list below. ' +
-    'Respond with only the department name exactly as it appears, without any numbering or extra ' +
-    `text.\n\nDepartments:\n${departmentNames.join('\n')}`;
-  const answer = await askModel(
-    'determineDepartmentForContent',
-    'You are an expert in categorizing academic content by department.',
-    prompt
-  );
-  const department = matchFromList(answer, departmentNames);
-  if (!department) {
-    throw new Error(`Model returned an unknown department: "${answer}"`);
-  }
-  return department;
+  const list = topics.map((topic) => ({
+    id: topic.id.replace('https://openalex.org/', ''),
+    name: topic.display_name,
+  }));
+  topicsCache.set(fieldId, { at: Date.now(), topics: list });
+  return list;
 };
 
 /**
- * Resolves the department (if pending) and topic of a cast/article document, saves it,
- * and registers it on the Topic. Returns the topic name, or null on failure.
+ * @param {{ title: string, description: string, department: string }} content
+ * @returns {Promise<{ name: string, openalexID: string }>}
+ * @throws {AIError}
  */
-const generateTopicForContent = async (content, contentType) => {
-  if (config.isTest) {
-    return content.topic || null;
-  }
-  try {
-    if (!content.department || content.department === PENDING_DEPARTMENT) {
-      content.department = await determineDepartmentForContent(content.description);
-      await content.save();
-      console.log(`Department for ${contentType} "${content.title}" set to ${content.department}`);
-    }
-
-    const fieldId = getFieldId(content.department);
-    if (!fieldId) {
-      throw new Error(`No field id found for department ${content.department}`);
-    }
-
-    const openAlexTopics = await fetchAllOpenAlexTopics(fieldId);
-    if (openAlexTopics.length === 0) {
-      throw new Error('No topics returned from OpenAlex.');
-    }
-
-    const bestTopicName = await determineBestTopic(
-      content.description,
-      openAlexTopics,
-      contentType
-    );
-    const matchedTopic = openAlexTopics.find((topic) => topic.display_name === bestTopicName);
-    const openalexID = matchedTopic?.id?.replace('https://openalex.org/', '') || undefined;
-    if (!openalexID) {
-      console.warn(`No matching OpenAlex topic found for ${bestTopicName}`);
-    }
-
-    content.topic = bestTopicName;
-    await content.save();
-    await createTopicIfNotExist({
-      name: bestTopicName,
-      departmentName: content.department,
-      openalexID,
-      contentId: content._id,
-      contentType,
+const chooseTopic = async ({ title, description, department }) => {
+  const fieldId = getFieldId(department);
+  if (!fieldId) {
+    throw new AIError('content', `No OpenAlex field for department "${department}".`, {
+      operation: 'chooseTopic',
     });
-    console.log(`${contentType} "${content.title}" assigned to topic ${bestTopicName}`);
-    return bestTopicName;
-  } catch (error) {
-    console.error(`Error generating topic for ${contentType}:`, error);
-    return null;
   }
+  if (config.isTest) return { name: 'Mock Topic', openalexID: 'T0' };
+  const topics = await fetchAllOpenAlexTopics(fieldId);
+
+  // The topic list is identical for every item of a department and comes first, so OpenAI's
+  // prompt caching bills it at the cached rate after the first call.
+  const response = await callOpenAI('chooseTopic', (client) =>
+    client.chat.completions.create({
+      model: config.openai.chatModel,
+      reasoning_effort: config.openai.reasoningEffort,
+      max_completion_tokens: 2000,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'topic_choice',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['topic_id'],
+            properties: { topic_id: { type: 'string' } },
+          },
+        },
+      },
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `Topics of the field ${department}:\n${topics.map((t) => `${t.id}: ${t.name}`).join('\n')}`,
+        },
+        {
+          role: 'user',
+          content: `Title: ${title}\n\n<content>\n${String(description || '').slice(0, 20000)}\n</content>`,
+        },
+      ],
+    })
+  );
+
+  let topicId;
+  try {
+    topicId = JSON.parse(response.choices?.[0]?.message?.content ?? '').topic_id;
+  } catch {
+    topicId = null;
+  }
+  const topic = topics.find((t) => t.id.toLowerCase() === String(topicId).trim().toLowerCase());
+  if (!topic) {
+    throw new AIError('content', `chooseTopic: unknown topic id "${topicId}"`, {
+      operation: 'chooseTopic',
+    });
+  }
+  return { name: topic.name, openalexID: topic.id };
 };
 
-module.exports = {
-  generateTopicForCast: (cast) => generateTopicForContent(cast, 'cast'),
-  generateTopicForArticle: (article) => generateTopicForContent(article, 'article'),
-  fetchAllOpenAlexTopics,
-  determineBestTopic,
-  getFieldId,
-  matchFromList,
-};
+module.exports = { chooseTopic, fetchAllOpenAlexTopics, getFieldId, topicsCache };

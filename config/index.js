@@ -43,9 +43,19 @@ const config = {
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
-    chatModel: process.env.OPENAI_CHAT_MODEL || 'gpt-4',
-    imageModel: process.env.OPENAI_IMAGE_MODEL || 'dall-e-3',
+    // Quiz, department, topic and image brief (structured outputs).
+    chatModel: process.env.OPENAI_CHAT_MODEL || 'gpt-6.1-terra',
+    reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'low',
+    imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2.6-flare',
+    imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
+    // whisper-1 is the only model returning timestamps (needed for subtitles). Others give text only.
     transcriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1',
+  },
+  ai: {
+    // Daily re-run of the AI pipeline for content still missing outputs (cron syntax, server time).
+    retryCron: process.env.AI_RETRY_CRON || '0 3 * * *',
+    // Content-related failures (e.g. moderation) tolerated before an item is marked "failed".
+    maxAttempts: Number(process.env.AI_MAX_ATTEMPTS) || 5,
   },
 };
 

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const processingSchema = require('./processing_schema');
 
 const castSchema = new mongoose.Schema({
   title: { type: String, required: true, unique: true, trim: true },
@@ -24,6 +25,7 @@ const castSchema = new mongoose.Schema({
   },
   topic: { type: String, required: true },
   subtitleurl: { type: String, required: false },
+  processing: { type: processingSchema, default: () => ({}) },
 });
 
 module.exports = mongoose.model('Cast', castSchema);

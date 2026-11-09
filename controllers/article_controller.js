@@ -1,8 +1,6 @@
 const Article = require('../models/article_model');
-const generateEvaluation = require('../services/generate_question');
-const { generateImage } = require('../services/generate_image');
 const computeDuration = require('../services/compute_duration');
-const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
+const { MEDIA_DIRS, deleteMediaByUrl } = require('../services/media');
 const {
   PENDING_TOPIC,
   createTopicIfNotExist,
@@ -19,7 +17,7 @@ const {
 } = require('../services/content');
 const { articleQueue } = require('../queues/article_queue');
 const { enqueue } = require('../queues/create_queue');
-const { assertObjectId, notFound, pick, isNonEmptyString, HttpError } = require('../utils/http');
+const { assertObjectId, notFound, pick, isNonEmptyString } = require('../utils/http');
 
 const EDITABLE_FIELDS = [
   'title',
@@ -29,14 +27,6 @@ const EDITABLE_FIELDS = [
   'category',
   'visibility',
   'link',
-];
-const REQUIRED_FIELDS = [
-  'title',
-  'description',
-  'brightmindid',
-  'university',
-  'category',
-  'visibility',
 ];
 // Updates may also replace the generated parts (the previous API accepted any field).
 const UPDATE_FIELDS = [...EDITABLE_FIELDS, 'evaluation', 'articleimageurl'];
@@ -48,6 +38,7 @@ const findArticleOr404 = async (id) => {
   return article;
 };
 
+/** Saves the article; question, image, department and topic are generated in the background. */
 exports.createArticle = async (req, res) => {
   const body = req.body;
   assertValidTitle(body.title);
@@ -63,18 +54,6 @@ exports.createArticle = async (req, res) => {
   if (body.dateadded) {
     article.dateadded = new Date(body.dateadded);
   }
-  // Fail fast before spending OpenAI credits on an invalid payload.
-  await article.validate(REQUIRED_FIELDS);
-
-  const [evaluation, imageFilename] = await Promise.all([
-    generateEvaluation(body.description),
-    generateImage(body.description, { dir: MEDIA_DIRS.articleImages, prefix: 'article' }),
-  ]);
-  if (!evaluation) throw new HttpError(502, 'Failed to generate evaluation');
-  if (!imageFilename) throw new HttpError(502, 'Failed to generate article image');
-  article.evaluation = evaluation;
-  article.articleimageurl = mediaUrl(MEDIA_DIRS.articleImages, imageFilename);
-
   await article.save();
 
   if (topicProvided && isAssignedTopic({ name: article.topic, departmentName: department })) {
@@ -86,9 +65,7 @@ exports.createArticle = async (req, res) => {
     });
   }
   await addPublicationToAuthor(article.brightmindid, 'articlePublications', article._id);
-  if (!topicProvided) {
-    enqueue(articleQueue, { articleId: article._id.toString(), generateTopic: true });
-  }
+  enqueue(articleQueue, { articleId: article._id.toString() });
 
   res.status(201).json({
     response: 'Article created and topic updated (or pending generation).',

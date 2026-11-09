@@ -61,20 +61,15 @@ describe('POST /cast', () => {
       await Topic.findOne({ name: 'Astrophysics', departmentName: 'PhysicsandAstronomy' })
     ).not.toBeNull();
     expect((await User.findById(author._id)).castPublications.map(String)).toEqual([res.body.id]);
-    expect(castQueue.jobs).toEqual([
-      {
-        castId: res.body.id,
-        videoFilePath: expect.stringContaining(filename),
-        generateTopic: false,
-      },
-    ]);
+    expect(castQueue.jobs).toEqual([{ castId: res.body.id }]);
+    expect(cast.processing.status).toBe('pending');
   });
 
-  test('without topic, asks the worker to generate it', async () => {
+  test('without topic, leaves a placeholder for the worker', async () => {
     const author = await createUser();
     const res = await postCast(castPayload(author, { topic: '' })).expect(201);
     expect((await Cast.findById(res.body.id)).topic).toBe('Pending Topic');
-    expect(castQueue.jobs[0].generateTopic).toBe(true);
+    expect(castQueue.jobs).toEqual([{ castId: res.body.id }]);
   });
 
   test('rejects duplicate titles with 409 and removes the uploaded file', async () => {

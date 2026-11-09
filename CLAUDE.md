@@ -2,7 +2,7 @@
 
 BrightMinds backend: REST API (Express 5, Mongoose 8, Node 22) for the BrightMinds mobile app.
 Content = **casts** (videos) and **articles**, enriched in the background with OpenAI
-(Whisper transcription, GPT evaluation questions/topic detection, DALL-E images) and classified
+(transcription + subtitles, quiz question, department, image; see README "AI processing") and classified
 into OpenAlex **topics** whose impact/activity scores are recomputed weekly.
 
 ## Commands
@@ -26,7 +26,7 @@ npm run check          # lint + format check + tests — run before declaring wo
 | `routes/`              | One router per resource; `routes/index.js` maps mount prefix → router                             |
 | `controllers/`         | Request handlers (thin: validate, call models/services, respond)                                  |
 | `services/`            | Business logic & integrations (OpenAI, mail, media files, topics, metrics)                        |
-| `queues/`              | Bull queues + job processors (cast transcription pipeline, article topic generation)              |
+| `queues/`              | Bull queues; both run `services/ai_pipeline.js` (daily retry: `services/ai_retry.js`)             |
 | `middleware/`          | `auth` (JWT), `upload` (multer), `error_handler`, `rate_limit`                                    |
 | `models/`              | Mongoose schemas                                                                                  |
 | `views/html.js`        | HTML pages (email confirmation, password reset) and email bodies                                  |
@@ -69,6 +69,8 @@ npm run check          # lint + format check + tests — run before declaring wo
 - With `NODE_ENV=test` (set in `tests/helpers/setup_env.js`) external services are stubbed:
   OpenAI generators return fixed mocks, the mailer records into `sentMessages`, queues record into
   `queue.jobs` instead of using Redis. Tests must never hit the network.
+- To exercise the real AI code paths, set `config.isTest = false` and `jest.mock('openai')` with a
+  fake client (see `tests/integration/ai_pipeline.test.js`).
 - Mock modules with `jest.mock()` for anything else external (see `services/video` in `cast.test.js`).
 - Toggle auth enforcement in a test with `config.auth.required = true` (reset it in `afterAll`).
 
@@ -76,6 +78,11 @@ npm run check          # lint + format check + tests — run before declaring wo
 
 - `User` `toJSON` strips `password` and tokens, but `.lean()` bypasses it — never return lean user docs.
 - Bull queue names `castQueue` / `articleQueue` are persisted in Redis: don't rename.
+- AI calls go through `callOpenAI()` (`services/openai.js`), which classifies errors
+  (`config` / `transient` / `content`) — that kind drives retries, alerts and the attempt count.
+  Pipeline steps must stay idempotent (skip when the output exists) and save as soon as they succeed.
+- The app compares the chosen answer to `evaluation.correct` as a string: keep the
+  `{ question, responses, correct }` shape with `correct` being one of `responses`.
 - Media URLs stored in MongoDB embed `PUBLIC_BASE_URL`; changing it doesn't rewrite existing documents.
 - `services/topic_indicator_computor.js` skips network calls when `config.isTest`; its unit test
   sets `NODE_ENV=development` and mocks `axios` to exercise them.

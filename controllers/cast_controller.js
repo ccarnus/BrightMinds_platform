@@ -71,7 +71,6 @@ exports.createCast = async (req, res) => {
   }
   await cast.save();
   // The cast now references the video: the error handler must not delete it if a later step fails.
-  const videoFilePath = req.file.path;
   req.file = undefined;
 
   if (topicProvided && isAssignedTopic({ name: cast.topic, departmentName: department })) {
@@ -83,11 +82,7 @@ exports.createCast = async (req, res) => {
     });
   }
   await addPublicationToAuthor(cast.brightmindid, 'castPublications', cast._id);
-  enqueue(castQueue, {
-    castId: cast._id.toString(),
-    videoFilePath,
-    generateTopic: !topicProvided,
-  });
+  enqueue(castQueue, { castId: cast._id.toString() });
 
   res.status(201).json({
     response: 'Cast created successfully. Background processing initiated.',

@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const config = require('./config');
 const app = require('./app');
 const { scheduleWeeklyImpactUpdate } = require('./services/topic_indicator_computor');
+const { scheduleDailyAIRetry } = require('./services/ai_retry');
 const { castQueue, startCastWorker } = require('./queues/cast_queue');
 const { articleQueue, startArticleWorker } = require('./queues/article_queue');
 
@@ -18,6 +19,10 @@ const start = async () => {
   startCastWorker();
   startArticleWorker();
   const impactTask = scheduleWeeklyImpactUpdate();
+  const retryTask = scheduleDailyAIRetry();
+  if (!config.openai.apiKey) {
+    console.warn('OPENAI_API_KEY is not set: new content stays unprocessed until it is.');
+  }
 
   const server = app.listen(config.port, () => {
     console.log(`Server listening on port ${config.port} (${config.env}).`);
@@ -27,6 +32,7 @@ const start = async () => {
     console.log(`${signal} received, shutting down.`);
     server.close();
     impactTask?.stop();
+    retryTask?.stop();
     await Promise.allSettled([castQueue.close(), articleQueue.close()]);
     await mongoose.disconnect();
     process.exit(0);

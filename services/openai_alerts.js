@@ -1,97 +1,69 @@
-// Emails an alert (throttled) when OpenAI calls fail because the API key is missing or rejected.
+// Emails an alert when the AI pipeline cannot use OpenAI or gives up on an item.
+// Throttled per (kind, operation) so an outage sends one email, not one per queued item.
 const config = require('../config');
 const { sendMail } = require('./mailer');
 
-let lastAlertAt = 0;
-let lastAlertKey = '';
+const lastAlertAt = new Map();
 
-const normalizeErrorInfo = (error) => {
-  const responseError = error?.response?.data?.error;
-  return {
-    status: error?.status ?? error?.response?.status ?? null,
-    code: error?.code ?? responseError?.code ?? error?.error?.code ?? null,
-    type: error?.type ?? responseError?.type ?? error?.error?.type ?? null,
-    message: error?.message || responseError?.message || error?.error?.message || '',
-  };
+const SUBJECTS = {
+  config: 'OpenAI configuration problem (API key, credit or model)',
+  transient: 'OpenAI unreachable: AI processing delayed',
+  content: 'AI processing gave up on an item',
 };
 
-const AUTH_ERROR_CODES = new Set([
-  'invalid_api_key',
-  'authentication_error',
-  'invalid_authentication',
-  'account_deactivated',
-]);
-
-const isAuthError = (info) => {
-  const message = (info.message || '').toLowerCase();
-  if (info.status === 401 || info.status === 403) return true;
-  if (info.type === 'authentication_error') return true;
-  if (info.code && AUTH_ERROR_CODES.has(String(info.code))) return true;
-  if (message.includes('invalid api key') || message.includes('incorrect api key')) return true;
-  return message.includes('expired') && (message.includes('token') || message.includes('api key'));
+const ACTIONS = {
+  config:
+    'Check OPENAI_API_KEY, the account credit and the model names (OPENAI_*_MODEL), then restart ' +
+    'the API. Unprocessed content is retried automatically every day.',
+  transient:
+    'Nothing to do if this is temporary: unprocessed content is retried automatically every day.',
+  content:
+    'This item reached the maximum number of attempts and will not be retried automatically. ' +
+    'Fix it, then run `node scripts/ai.js retry --failed`.',
 };
 
 const shouldAlert = (key) => {
   const now = Date.now();
-  if (lastAlertKey === key && now - lastAlertAt < config.alerts.throttleMs) {
-    return false;
-  }
-  lastAlertKey = key;
-  lastAlertAt = now;
+  if (now - (lastAlertAt.get(key) ?? -Infinity) < config.alerts.throttleMs) return false;
+  lastAlertAt.set(key, now);
   return true;
 };
 
-const buildAlertText = (title, context, info) => {
-  const lines = [
-    title,
+/**
+ * @param {{ kind: string, operation?: string, message: string, status?: number, code?: string }} error
+ * @param {string} [details] Extra lines (e.g. which item).
+ * @returns {Promise<boolean>} Whether an alert was emitted (false when throttled).
+ */
+const alertOpenAIProblem = async (error, details = '') => {
+  const kind = SUBJECTS[error.kind] ? error.kind : 'content';
+  const operation = error.operation || 'unknown';
+  if (!shouldAlert(`${kind}:${operation}:${details}`)) return false;
+
+  const text = [
+    SUBJECTS[kind],
     `Time: ${new Date().toISOString()}`,
-    `Operation: ${context?.operation || 'unknown'}`,
-    `Node env: ${config.env}`,
-  ];
-  if (info) {
-    lines.push(`Status: ${info.status ?? 'n/a'}`);
-    lines.push(`Code: ${info.code ?? 'n/a'}`);
-    lines.push(`Type: ${info.type ?? 'n/a'}`);
-    lines.push(`Message: ${info.message || 'n/a'}`);
-  }
-  return lines.join('\n');
-};
-
-const sendAlert = async (subject, text) => {
+    `Operation: ${operation}`,
+    `Error: ${error.message}`,
+    `Status: ${error.status ?? 'n/a'} · Code: ${error.code ?? 'n/a'}`,
+    details,
+    '',
+    ACTIONS[kind],
+  ]
+    .filter((line) => line !== undefined)
+    .join('\n');
   console.error(text);
-  if (!config.alerts.to || (!config.isTest && !config.mail.password)) {
-    return;
-  }
-  try {
-    await sendMail({ to: config.alerts.to, subject, text });
-  } catch (sendError) {
-    console.error('Failed to send OpenAI alert email:', sendError.message);
-  }
-};
 
-const reportOpenAIAuthError = async (error, context = {}) => {
-  const info = normalizeErrorInfo(error);
-  if (!isAuthError(info) || !shouldAlert(`auth:${context.operation || 'unknown'}`)) {
-    return false;
+  if (config.alerts.to && (config.isTest || config.mail.password)) {
+    try {
+      await sendMail({ to: config.alerts.to, subject: `[BrightMinds] ${SUBJECTS[kind]}`, text });
+    } catch (sendError) {
+      console.error('Failed to send OpenAI alert email:', sendError.message);
+    }
   }
-  await sendAlert(
-    'OpenAI auth error (token expired?)',
-    buildAlertText('OpenAI authentication error detected.', context, info)
-  );
   return true;
 };
 
-const reportOpenAIMissingApiKey = async (context = {}) => {
-  if (!shouldAlert(`missing:${context.operation || 'unknown'}`)) {
-    return false;
-  }
-  await sendAlert('OpenAI API key missing', buildAlertText('OpenAI API key is missing.', context));
-  return true;
-};
+/** Test helper: forget throttling state. */
+const resetAlertThrottle = () => lastAlertAt.clear();
 
-module.exports = {
-  reportOpenAIAuthError,
-  reportOpenAIMissingApiKey,
-  normalizeErrorInfo,
-  isAuthError,
-};
+module.exports = { alertOpenAIProblem, resetAlertThrottle };

@@ -32,7 +32,7 @@ const payload = (author, overrides = {}) => ({
 });
 
 describe('POST /article', () => {
-  test('creates the article, its topic and the author publication', async () => {
+  test('creates the article, its topic and the author publication, then queues AI work', async () => {
     const author = await createUser();
     const res = await request(app)
       .post('/article')
@@ -41,10 +41,10 @@ describe('POST /article', () => {
 
     const article = await Article.findById(res.body.id);
     expect(article.duration).toBe(2);
-    expect(article.evaluation.question).toBe('Mock question?');
-    expect(article.articleimageurl).toBe(
-      'http://api.test/backend/media/article_images/article_test.jpg'
-    );
+    // Question and image are generated in the background, so OpenAI outages never block posting.
+    expect(article.evaluation.question).toBeUndefined();
+    expect(article.articleimageurl).toBeUndefined();
+    expect(article.processing.status).toBe('pending');
     // Mass assignment of protected fields is ignored.
     expect(article.rating.count).toBe(1);
 
@@ -53,10 +53,10 @@ describe('POST /article', () => {
     expect((await User.findById(author._id)).articlePublications.map(String)).toEqual([
       article._id.toString(),
     ]);
-    expect(articleQueue.jobs).toHaveLength(0);
+    expect(articleQueue.jobs).toEqual([{ articleId: res.body.id }]);
   });
 
-  test('without topic/department, uses placeholders and enqueues topic generation', async () => {
+  test('without topic/department, uses placeholders until the AI job fills them', async () => {
     const author = await createUser();
     const res = await request(app)
       .post('/article')
@@ -66,7 +66,7 @@ describe('POST /article', () => {
     expect(article.topic).toBe('Pending Topic');
     expect(article.department).toBe('Pending Department');
     expect(await Topic.countDocuments()).toBe(0);
-    expect(articleQueue.jobs).toEqual([{ articleId: res.body.id, generateTopic: true }]);
+    expect(articleQueue.jobs).toEqual([{ articleId: res.body.id }]);
   });
 
   test.each([

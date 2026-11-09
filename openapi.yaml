@@ -385,9 +385,9 @@ paths:
       tags: [Article]
       summary: Create an article
       description: |
-        The evaluation question and the article image are generated with OpenAI before
-        saving; if either generation fails the article is not created (502). If no topic
-        is given, it is generated in a background queue.
+        The article is saved immediately. Its evaluation question, image and (if not given)
+        department and topic are generated with OpenAI in a background queue, retried
+        automatically (see `processing` on the article).
       security:
         - bearerAuth: []
       requestBody:
@@ -407,8 +407,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "502":
-          $ref: "#/components/responses/BadGateway"
     get:
       tags: [Article]
       summary: List all articles
@@ -2076,15 +2074,6 @@ components:
           example:
             error: Too many attempts, please try again later.
             message: Too many attempts, please try again later.
-    BadGateway:
-      description: Upstream AI generation (evaluation or image) failed
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-          example:
-            error: Failed to generate evaluation
-            message: Failed to generate evaluation
     InternalServerError:
       description: Unexpected server error (e.g. email could not be sent)
       content:
@@ -2234,6 +2223,26 @@ components:
           type: string
         subtitleurl:
           type: string
+        processing:
+          $ref: "#/components/schemas/Processing"
+    Processing:
+      type: object
+      description: |
+        Background AI processing (transcript, subtitles, evaluation, department, topic, image).
+        Failed steps are retried with backoff, then once a day; `failed` means the item itself
+        could not be processed after several days and needs attention.
+      properties:
+        status:
+          type: string
+          enum: [pending, processing, done, failed]
+        attempts:
+          type: integer
+          description: Failures caused by the item itself (OpenAI outages are not counted).
+        lastError:
+          type: string
+        lastAttemptAt:
+          type: string
+          format: date-time
     CastCreate:
       type: object
       description: Content of the `cast` multipart field for `POST /cast`.
@@ -2306,6 +2315,7 @@ components:
           type: string
         articleimageurl:
           type: string
+          description: Generated in the background; absent until then.
         university:
           type: string
         category:
@@ -2325,6 +2335,8 @@ components:
           $ref: "#/components/schemas/Evaluation"
         topic:
           type: string
+        processing:
+          $ref: "#/components/schemas/Processing"
     ArticleCreate:
       type: object
       properties:

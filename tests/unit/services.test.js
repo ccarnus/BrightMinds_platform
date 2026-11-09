@@ -1,9 +1,15 @@
 const computeDuration = require('../../services/compute_duration');
 const isValidEmail = require('../../services/email_validator');
-const { parseEvaluation } = require('../../services/generate_question');
-const { toSRTTimestamp, buildSRTFromSegments } = require('../../services/transcription');
-const { isAuthError, normalizeErrorInfo } = require('../../services/openai_alerts');
-const { matchFromList, getFieldId } = require('../../services/generate_topic');
+const OpenAI = require('openai');
+const { toEvaluation } = require('../../services/analyze_content');
+const {
+  toSRTTimestamp,
+  buildSRTFromSegments,
+  buildPrompt,
+  isSpeech,
+} = require('../../services/transcription');
+const { AIError, classifyError } = require('../../services/openai');
+const { getFieldId } = require('../../services/generate_topic');
 const { departments, departmentNames, departmentIdByName } = require('../../lists/departments');
 const { escapeHtml, passwordResetEmail } = require('../../views/html');
 
@@ -29,19 +35,31 @@ describe('isValidEmail', () => {
   });
 });
 
-describe('parseEvaluation', () => {
-  test('extracts question, answers and the correct (first) answer', () => {
-    const text = 'Question: What is H2O?\n\nA) Water\nB) Salt\nC) Sugar\nD) Iron';
-    const evaluation = parseEvaluation(text);
-    expect(evaluation.question).toBe('What is H2O?');
-    expect(evaluation.correct).toBe('Water');
-    expect(evaluation.responses.sort()).toEqual(['Iron', 'Salt', 'Sugar', 'Water']);
+describe('toEvaluation', () => {
+  const output = {
+    question: ' Why does zinc starve bacteria? ',
+    correct_answer: 'It binds the metals they need',
+    distractors: ['It heats them', 'It feeds the immune system', 'It dissolves their wall'],
+  };
+
+  test('returns the stored shape with the correct answer among shuffled responses', () => {
+    const evaluation = toEvaluation(output);
+    expect(evaluation.question).toBe('Why does zinc starve bacteria?');
+    expect(evaluation.correct).toBe('It binds the metals they need');
+    expect([...evaluation.responses].sort()).toEqual(
+      [output.correct_answer, ...output.distractors].sort()
+    );
   });
 
-  test('returns null when the output has no answers', () => {
-    expect(parseEvaluation('Only a question?')).toBeNull();
-    expect(parseEvaluation('')).toBeNull();
-    expect(parseEvaluation(undefined)).toBeNull();
+  test('drops duplicate or empty distractors and rejects incomplete output', () => {
+    expect(
+      toEvaluation({ ...output, distractors: ['It heats them', 'it heats them', '', 'X'] })
+    ).toBeNull();
+    expect(
+      toEvaluation({ ...output, distractors: [output.correct_answer, 'A', 'B', 'C'] }).responses
+    ).toHaveLength(4);
+    expect(toEvaluation({ ...output, question: ' ' })).toBeNull();
+    expect(toEvaluation(null)).toBeNull();
   });
 });
 
@@ -64,32 +82,44 @@ describe('SRT helpers', () => {
   });
 });
 
-describe('OpenAI alerts', () => {
-  test.each([
-    [{ status: 401 }],
-    [{ response: { status: 403 } }],
-    [{ code: 'invalid_api_key' }],
-    [{ error: { type: 'authentication_error' } }],
-    [{ message: 'Incorrect API key provided' }],
-    [{ message: 'Your token has expired' }],
-  ])('detects auth errors: %p', (error) => {
-    expect(isAuthError(normalizeErrorInfo(error))).toBe(true);
+describe('transcription helpers', () => {
+  test('buildPrompt gives the title and keeps the end of the previous text', () => {
+    expect(buildPrompt('Zinc mattress')).toBe('Research talk: Zinc mattress.');
+    const prompt = buildPrompt('T', 'x'.repeat(2000) + ' last words');
+    expect(prompt).toHaveLength(800);
+    expect(prompt.endsWith('last words')).toBe(true);
   });
 
-  test.each([[{ status: 500 }], [{ status: 429, message: 'Rate limit' }], [{}]])(
-    'ignores other errors: %p',
-    (error) => {
-      expect(isAuthError(normalizeErrorInfo(error))).toBe(false);
-    }
-  );
+  test('isSpeech drops segments Whisper hallucinated over silence', () => {
+    expect(isSpeech({ text: 'Hello', no_speech_prob: 0.1, avg_logprob: -0.2 })).toBe(true);
+    expect(isSpeech({ text: 'Thank you.', no_speech_prob: 0.9, avg_logprob: -1.5 })).toBe(false);
+    expect(isSpeech({ text: ' ', no_speech_prob: 0, avg_logprob: 0 })).toBe(false);
+  });
+});
+
+describe('classifyError', () => {
+  const apiError = (status, code) =>
+    OpenAI.APIError.generate(status, { error: { code, message: code } }, code, {});
+
+  test.each([
+    ['bad key', apiError(401, 'invalid_api_key'), 'config'],
+    ['no credit', apiError(429, 'insufficient_quota'), 'config'],
+    ['unknown model', apiError(404, 'model_not_found'), 'config'],
+    ['rejected parameter', apiError(400, 'unsupported_parameter'), 'config'],
+    ['rate limit', apiError(429, 'rate_limit_exceeded'), 'transient'],
+    ['server error', apiError(503, null), 'transient'],
+    ['no network', new OpenAI.APIConnectionError({ message: 'down' }), 'transient'],
+    ['timeout', new OpenAI.APIConnectionTimeoutError(), 'transient'],
+    ['DNS failure', Object.assign(new Error('x'), { code: 'ENOTFOUND' }), 'transient'],
+    ['moderation', apiError(400, 'content_policy_violation'), 'content'],
+    ['local failure', new Error('ffmpeg exited'), 'content'],
+    ['AIError', new AIError('transient', 'x'), 'transient'],
+  ])('%s -> %s', (label, error, kind) => {
+    expect(classifyError(error)).toBe(kind);
+  });
 });
 
 describe('generate_topic helpers', () => {
-  test('matchFromList is case and quote insensitive', () => {
-    expect(matchFromList('"chemistry"', departmentNames)).toBe('Chemistry');
-    expect(matchFromList('Alchemy', departmentNames)).toBeNull();
-  });
-
   test('getFieldId maps department names to OpenAlex field ids', () => {
     expect(getFieldId('ComputerScience')).toBe(17);
     expect(getFieldId('Unknown')).toBeNull();

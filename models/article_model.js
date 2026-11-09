@@ -1,11 +1,13 @@
 const mongoose = require('mongoose');
+const processingSchema = require('./processing_schema');
 
 const articleSchema = new mongoose.Schema({
   title: { type: String, required: true },
   department: { type: String, required: true },
   brightmindid: { type: String, required: true },
   description: { type: String, required: true },
-  articleimageurl: { type: String, required: true },
+  // Generated in the background (see services/ai_pipeline.js).
+  articleimageurl: { type: String, required: false },
   university: { type: String, required: true },
   category: { type: String, required: true },
   visibility: { type: String, required: true },
@@ -27,6 +29,7 @@ const articleSchema = new mongoose.Schema({
     correct: { type: String, required: false },
   },
   topic: { type: String, required: true },
+  processing: { type: processingSchema, default: () => ({}) },
 });
 
 module.exports = mongoose.model('Article', articleSchema);

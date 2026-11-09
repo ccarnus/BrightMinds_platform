@@ -1,14 +1,21 @@
-// Extracts a cast's audio with ffmpeg and transcribes it with Whisper (plain text + SRT subtitles).
+// Transcribes a cast: extracts speech-optimized audio with ffmpeg and sends it to the OpenAI
+// transcription model. With whisper-1 it also returns SRT subtitles built from segment timestamps.
 const { PassThrough } = require('stream');
-const FormData = require('form-data');
-const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
 const config = require('../config');
-const { reportOpenAIAuthError, reportOpenAIMissingApiKey } = require('./openai_alerts');
+const { AIError, assertOpenAIAvailable, callOpenAI } = require('./openai');
+const { getVideoDurationInSeconds } = require('./video');
 
 ffmpeg.setFfmpegPath(require('@ffmpeg-installer/ffmpeg').path);
 
-const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions';
+// Speech models work on 16 kHz mono: 48 kbps MP3 keeps full quality at ~0.36 MB per minute,
+// so 20-minute chunks (~7 MB) stay far below the 25 MB upload limit.
+const CHUNK_SECONDS = 20 * 60;
+// whisper-1 only reads the last 224 tokens of the prompt.
+const PROMPT_MAX_CHARS = 800;
+// Whisper's own thresholds for "this segment is silence the model hallucinated text into".
+const NO_SPEECH_PROB = 0.6;
+const LOW_AVG_LOGPROB = -1;
 
 /** Formats seconds as an SRT timestamp "HH:MM:SS,mmm". */
 const toSRTTimestamp = (seconds) => {
@@ -29,53 +36,96 @@ const buildSRTFromSegments = (segments = []) =>
     )
     .join('');
 
-/** Mono 64 kbps MP3 keeps ~50 minutes of audio under Whisper's 25 MB upload limit. */
-const extractAudio = (videoPath) =>
+const isSpeech = (segment) =>
+  Boolean(segment.text?.trim()) &&
+  !(segment.no_speech_prob > NO_SPEECH_PROB && segment.avg_logprob < LOW_AVG_LOGPROB);
+
+/**
+ * Context for the model: the title gives it the subject's vocabulary (names, jargon), and the end
+ * of the previous chunk keeps spelling and style consistent across chunks.
+ */
+const buildPrompt = (title, previousText = '') => {
+  const context = `${title ? `Research talk: ${title.trim()}.` : ''} ${previousText}`.trim();
+  return context.slice(-PROMPT_MAX_CHARS);
+};
+
+const extractAudio = (videoPath, startSeconds, durationSeconds) =>
   new Promise((resolve, reject) => {
     const chunks = [];
     const output = new PassThrough();
     output.on('data', (chunk) => chunks.push(chunk));
     output.on('error', reject);
-    ffmpeg(videoPath)
+    const command = ffmpeg(videoPath)
       .noVideo()
       .audioCodec('libmp3lame')
       .audioChannels(1)
-      .audioBitrate('64k')
-      .format('mp3')
+      .audioFrequency(16000)
+      .audioBitrate('48k')
+      .format('mp3');
+    if (startSeconds) command.setStartTime(startSeconds);
+    if (durationSeconds) command.setDuration(durationSeconds);
+    command
       .on('error', (error) => reject(new Error(`Error extracting audio: ${error.message}`)))
       .on('end', () => resolve(Buffer.concat(chunks)))
       .pipe(output);
   });
 
+const transcribeChunk = async (audio, prompt) => {
+  const { toFile } = require('openai');
+  const model = config.openai.transcriptionModel;
+  const withTimestamps = model === 'whisper-1';
+  const result = await callOpenAI('transcribeVideo', async (client) =>
+    client.audio.transcriptions.create({
+      file: await toFile(audio, 'audio.mp3', { type: 'audio/mpeg' }),
+      model,
+      prompt: prompt || undefined,
+      response_format: withTimestamps ? 'verbose_json' : 'json',
+      ...(withTimestamps && { timestamp_granularities: ['segment'], temperature: 0 }),
+    })
+  );
+  return { text: String(result?.text ?? '').trim(), segments: result?.segments ?? null };
+};
+
 /**
  * @param {string} videoPath Absolute path of the uploaded video.
- * @returns {Promise<{ text: string, srt: string }>}
+ * @param {{ title?: string }} [context]
+ * @returns {Promise<{ text: string, srt: string|null }>} `srt` is null when the model gives no timestamps.
  */
-const transcribeVideo = async (videoPath) => {
-  if (!config.openai.apiKey) {
-    await reportOpenAIMissingApiKey({ operation: 'transcribeVideo' });
-    throw new Error('OpenAI API key not configured. Set OPENAI_API_KEY.');
+const transcribeVideo = async (videoPath, { title } = {}) => {
+  await assertOpenAIAvailable('transcribeVideo'); // before spending time on ffmpeg
+  const duration = await getVideoDurationInSeconds(videoPath);
+  const chunkCount = Math.max(1, Math.ceil(duration / CHUNK_SECONDS));
+  const texts = [];
+  const segments = [];
+  let timestamped = true;
+
+  for (let index = 0; index < chunkCount; index++) {
+    const offset = index * CHUNK_SECONDS;
+    const audio = await extractAudio(videoPath, offset, chunkCount > 1 ? CHUNK_SECONDS : undefined);
+    const chunk = await transcribeChunk(audio, buildPrompt(title, texts.join(' ')));
+    if (!chunk.segments) {
+      timestamped = false;
+      texts.push(chunk.text);
+      continue;
+    }
+    const kept = chunk.segments
+      .filter(isSpeech)
+      .map((segment) => ({ ...segment, start: segment.start + offset, end: segment.end + offset }));
+    segments.push(...kept);
+    texts.push(kept.map((segment) => segment.text.trim()).join(' '));
   }
 
-  const audio = await extractAudio(videoPath);
-  const form = new FormData();
-  form.append('file', audio, { filename: 'audio.mp3', contentType: 'audio/mpeg' });
-  form.append('model', config.openai.transcriptionModel);
-  form.append('response_format', 'verbose_json');
-
-  try {
-    const { data } = await axios.post(OPENAI_TRANSCRIPTION_URL, form, {
-      headers: { Authorization: `Bearer ${config.openai.apiKey}`, ...form.getHeaders() },
-      maxBodyLength: Infinity,
-      timeout: 10 * 60 * 1000,
+  const text = texts.join(' ').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    throw new AIError('content', 'No speech detected in the video.', {
+      operation: 'transcribeVideo',
     });
-    return { text: data.text, srt: buildSRTFromSegments(data.segments) };
-  } catch (error) {
-    await reportOpenAIAuthError(error, { operation: 'transcribeVideo' });
-    throw new Error(`Error transcribing audio: ${error.message}`, { cause: error });
   }
+  return { text, srt: timestamped && segments.length ? buildSRTFromSegments(segments) : null };
 };
 
 module.exports = transcribeVideo;
 module.exports.toSRTTimestamp = toSRTTimestamp;
 module.exports.buildSRTFromSegments = buildSRTFromSegments;
+module.exports.buildPrompt = buildPrompt;
+module.exports.isSpeech = isSpeech;
