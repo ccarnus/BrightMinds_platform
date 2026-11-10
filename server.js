@@ -4,6 +4,7 @@ const config = require('./config');
 const app = require('./app');
 const { scheduleWeeklyImpactUpdate } = require('./services/topic_indicator_computor');
 const { scheduleDailyAIRetry } = require('./services/ai_retry');
+const { migrateLearningProfiles } = require('./services/learning_migration');
 const { castQueue, startCastWorker } = require('./queues/cast_queue');
 const { articleQueue, startArticleWorker } = require('./queues/article_queue');
 
@@ -15,6 +16,14 @@ const start = async () => {
 
   await mongoose.connect(config.mongoUri);
   console.log('Connected to MongoDB.');
+
+  // A failed migration leaves the remaining accounts for the next start; the API still works.
+  try {
+    const migrated = await migrateLearningProfiles();
+    if (migrated > 0) console.log(`Migrated ${migrated} learning profile(s).`);
+  } catch (error) {
+    console.error('Learning profile migration failed:', error);
+  }
 
   startCastWorker();
   startArticleWorker();

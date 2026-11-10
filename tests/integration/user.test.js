@@ -38,7 +38,8 @@ const validSignup = {
   username: 'newuser',
   role: 'Professor',
   university: 'MIT',
-  objective: 'Career',
+  path: 'deep_learner',
+  focusField: 'Chemistry',
 };
 
 describe('POST /user/signup', () => {
@@ -49,8 +50,12 @@ describe('POST /user/signup', () => {
     const user = await User.findOne({ email: 'new.user@example.com' });
     expect(user.isVerified).toBe(false);
     expect(user.university).toBe('MIT');
-    expect(user.tracking.objective).toBe('Career');
-    expect(user.tracking.target).toBe(50);
+    expect(user.learning).toMatchObject({
+      version: 1,
+      path: 'deep_learner',
+      focusField: 'Chemistry',
+    });
+    expect(user.learning.startedAt).toBeInstanceOf(Date);
     expect(await bcrypt.compare('secret123', user.password)).toBe(true);
     expect(user.profilePictureUrl).toMatch(
       /^http:\/\/api\.test\/backend\/media\/profile_pictures\/me_.*\.png$/
@@ -68,6 +73,29 @@ describe('POST /user/signup', () => {
     await signup({ ...validSignup, role: 'College Student' }).expect(201);
     const user = await User.findOne({ email: 'new.user@example.com' });
     expect(user.university).toBeUndefined();
+  });
+
+  test('the learning path is optional; legacy and retired objectives are handled', async () => {
+    await signup({ ...validSignup, email: 'a@example.com', path: undefined }).expect(201);
+    await signup({
+      ...validSignup,
+      email: 'b@example.com',
+      path: undefined,
+      objective: 'DeepLearner',
+    }).expect(201);
+    await signup({
+      ...validSignup,
+      email: 'c@example.com',
+      path: undefined,
+      objective: 'Career',
+    }).expect(201);
+    const [a, b, c] = await Promise.all(
+      ['a', 'b', 'c'].map((name) => User.findOne({ email: `${name}@example.com` }))
+    );
+    expect(a.learning).toMatchObject({ version: 1, path: null });
+    expect(b.learning).toMatchObject({ path: 'deep_learner', focusField: 'Chemistry' });
+    // Career was retired: the user picks a path during onboarding.
+    expect(c.learning.path).toBeNull();
   });
 
   test('rejects a duplicate email (case-insensitive) with 409', async () => {

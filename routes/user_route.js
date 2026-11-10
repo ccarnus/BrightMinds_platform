@@ -1,5 +1,6 @@
 const express = require('express');
 const userController = require('../controllers/user_controller');
+const learningController = require('../controllers/learning_controller');
 const { authenticate, requireSelf } = require('../middleware/auth');
 const { authRateLimit } = require('../middleware/rate_limit');
 const upload = require('../middleware/upload');
@@ -35,11 +36,17 @@ router.get('/bookmarks/:id', self, userController.getUserBookmarks);
 router.post('/add/bookmarks/:id', self, userController.addUserBookmark);
 router.delete('/remove/bookmarks/:id/:contentId', self, userController.removeUserBookmark);
 
-// Preferences & tracking
+// Preferences & suggestions
 router.get('/:id/preferences', self, userController.getUserPreferences);
 router.post('/:id/preferences', self, userController.updateUserPreferences);
 router.get('/:id/suggested/for/you', self, userController.getSuggestedForYou);
-router.put('/:id/update/tracking', self, userController.updateUserTracking);
-router.get('/:id/tracking', self, userController.getUserTracking);
+
+// Learning path
+router.get('/:id/learning', self, learningController.getUserLearning);
+router.put('/:id/learning', self, learningController.updateUserLearning);
+router.post('/:id/learning/papers', self, learningController.recordUserPaper);
+// Legacy views of the learning path for app versions <= 1.0.5.
+router.put('/:id/update/tracking', self, learningController.updateUserTracking);
+router.get('/:id/tracking', self, learningController.getUserTracking);
 
 module.exports = router;

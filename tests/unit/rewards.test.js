@@ -14,7 +14,7 @@ const freshUser = (overrides = {}) => ({
     badges: [],
     ...overrides.rewards,
   },
-  tracking: { progress: 0, target: 10, ...overrides.tracking },
+  learning: { milestones: [], ...overrides.learning },
 });
 
 describe('levels', () => {
@@ -71,7 +71,7 @@ describe('scoreQuiz', () => {
 });
 
 describe('applyQuiz', () => {
-  test('awards XP, streak, badges and learning path progress', () => {
+  test('awards XP, streak and badges', () => {
     const user = freshUser();
     const quiz = rewards.scoreQuiz([answer(true), answer(true), answer(true)]);
     const outcome = rewards.applyQuiz(user, quiz, '2026-11-10');
@@ -94,7 +94,6 @@ describe('applyQuiz', () => {
       correctAnswers: 3,
     });
     expect(user.rewards.streak).toMatchObject({ current: 1, best: 1, lastQuizDay: '2026-11-10' });
-    expect(user.tracking.progress).toBe(3);
   });
 
   test('the streak continues on consecutive days, pays once per day and resets after a gap', () => {
@@ -117,7 +116,7 @@ describe('applyQuiz', () => {
   test('badges are awarded once and level ups are reported', () => {
     const user = freshUser({
       rewards: { xp: 95, quizzesCompleted: 9, correctAnswers: 9, badges: [{ key: 'first_quiz' }] },
-      tracking: { progress: 9, target: 10 },
+      learning: { milestones: [{ path: 'follower', level: 1 }] },
     });
     const outcome = rewards.applyQuiz(user, rewards.scoreQuiz([answer(true)]), '2026-11-10');
     expect(outcome.leveledUp).toBe(true);

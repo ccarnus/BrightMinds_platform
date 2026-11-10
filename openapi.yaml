@@ -12,7 +12,7 @@ info:
     enforced, a missing or invalid/expired token yields `401`.
 
     **Own-account routes.** User routes that take the account id as `{id}`
-    (profile update/delete, evaluation list, bookmarks, preferences, tracking,
+    (profile update/delete, evaluation list, bookmarks, preferences, learning path,
     suggestions) additionally require the token's user to match `{id}`;
     otherwise the server answers `403` (also only when `AUTH_REQUIRED=true`).
 
@@ -32,6 +32,7 @@ tags:
   - name: Cast
   - name: Article
   - name: User
+  - name: Learning
   - name: University
   - name: VirtualLab
   - name: Topic
@@ -630,7 +631,7 @@ paths:
                 user:
                   type: string
                   description: JSON-encoded `UserSignup` object.
-                  example: '{"email":"jane@university.edu","password":"secret","username":"jane","role":"Researcher","university":"MIT","objective":"Explorer"}'
+                  example: '{"email":"jane@university.edu","password":"secret","username":"jane","role":"Researcher","university":"MIT","path":"explorer"}'
                 image:
                   type: string
                   format: binary
@@ -946,8 +947,9 @@ paths:
       tags: [User]
       summary: Add content to evaluation list
       description: |
-        Marks the content as watched. The first time a content is added, the user's
-        `tracking.history` count for the content's department is incremented.
+        Marks the content as watched. The first time a content is added, it counts in the
+        user's learning stats (in total and for the content's department), which may reach a
+        milestone of the learning path (`newMilestones`).
       security:
         - bearerAuth: []
       parameters:
@@ -972,7 +974,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
+                type: object
+                properties:
+                  message:
+                    type: string
+                  newMilestones:
+                    type: array
+                    description: Only when the content was added for the first time.
+                    items:
+                      $ref: "#/components/schemas/ReachedMilestone"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1358,7 +1368,13 @@ paths:
     get:
       tags: [User]
       summary: Get suggested casts for user
-      description: Casts from the user's preferred departments, highest preference weight first.
+      description: |
+        "For You" casts, shaped by the learning path:
+        - Follower: the newest casts from the preferred departments;
+        - Explorer: the best-rated casts from departments not explored yet (at most 50), then the
+          explored preferred departments;
+        - Deep Learner: the focus field first, then the other preferred departments;
+        - otherwise: preferred departments, highest preference weight first.
       security:
         - bearerAuth: []
       parameters:
@@ -1379,16 +1395,142 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          description: User not found, or user has no preferences
+          description: User not found, or nothing to base suggestions on (no preferences)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /user/{id}/learning:
+    get:
+      tags: [Learning]
+      summary: Get the user's learning profile
+      description: Path, lifetime learning stats, milestone journey and history of previous paths.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Learning profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningProfile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Learning]
+      summary: Choose or change the learning path
+      description: >-
+        Progress is never lost: milestones read lifetime stats, so the new path may already have
+        reached milestones (returned in `newMilestones`). The previous path is kept in the history.
+        Display names and legacy spellings ("Deep Learner", "DeepLearner") are accepted.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  $ref: "#/components/schemas/LearningPathKey"
+                focusField:
+                  $ref: "#/components/schemas/Department"
+              required: [path]
+            example: { "path": "deep_learner", "focusField": "Chemistry" }
+      responses:
+        "200":
+          description: Learning path updated (or unchanged)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    enum: [Learning path updated., Learning path unchanged.]
+                  learning:
+                    $ref: "#/components/schemas/LearningProfile"
+                  newMilestones:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReachedMilestone"
+        "400":
+          description: Unknown or retired path (Career), or invalid focus field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /user/{id}/learning/papers:
+    post:
+      tags: [Learning]
+      summary: Record an opened research paper
+      description: >-
+        Counts an OpenAlex work opened in the app once per user (Researcher path), optionally in
+        its field.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paperId:
+                  type: string
+                  description: OpenAlex work id or URL (W2741809807, https://openalex.org/W2741809807).
+                field:
+                  $ref: "#/components/schemas/Department"
+              required: [paperId]
+      responses:
+        "200":
+          description: Paper recorded (`recorded` is false when it was already counted)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recorded:
+                    type: boolean
+                  newMilestones:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReachedMilestone"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/{id}/update/tracking:
     put:
-      tags: [User]
-      summary: Update user tracking objective
-      description: Also sets `tracking.target` from the objective.
+      tags: [Learning]
+      deprecated: true
+      summary: Change the learning path (legacy, app <= 1.0.5)
+      description: >-
+        Legacy form of `PUT /user/{id}/learning`: `objective` is a path display name ("DeepLearner"
+        accepted). The retired Career objective answers 400.
       security:
         - bearerAuth: []
       parameters:
@@ -1425,8 +1567,10 @@ paths:
           $ref: "#/components/responses/NotFound"
   /user/{id}/tracking:
     get:
-      tags: [User]
-      summary: Get user tracking
+      tags: [Learning]
+      deprecated: true
+      summary: Get the learning path progress (legacy, app <= 1.0.5)
+      description: Legacy view of `GET /user/{id}/learning`.
       security:
         - bearerAuth: []
       parameters:
@@ -1451,6 +1595,27 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ Learning
+  /learning/paths:
+    get:
+      tags: [Learning]
+      summary: List the learning paths
+      description: >-
+        Catalog of the learning paths and their 5 milestones. Milestone goals read the user's
+        lifetime stats (Deep Learner: only its focus field), so progress never resets.
+      responses:
+        "200":
+          description: Learning paths
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paths:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LearningPath"
 
   # ------------------------------------------------------------------ University
   /university:
@@ -2247,7 +2412,188 @@ components:
         - Veterinary
     Objective:
       type: string
-      enum: [Follower, Explorer, Deep Learner, Researcher, Career]
+      description: Legacy learning path display name (use `LearningPathKey`). "DeepLearner" is also accepted.
+      enum: [Follower, Explorer, Deep Learner, Researcher]
+    LearningPathKey:
+      type: string
+      description: Stable path identifier. Display names are accepted on input; Career was retired.
+      enum: [follower, explorer, deep_learner, researcher]
+    LearningMetric:
+      type: string
+      description: >-
+        contents = casts watched and articles read, correctAnswers = quiz questions answered
+        correctly, fields = departments explored, papers = research papers opened.
+      enum: [contents, correctAnswers, fields, papers]
+    LearningGoal:
+      type: object
+      properties:
+        metric:
+          $ref: "#/components/schemas/LearningMetric"
+        label:
+          type: string
+        target:
+          type: number
+        current:
+          type: number
+          description: Lifetime value (may exceed the target). Only in a user's journey.
+    LearningPath:
+      type: object
+      properties:
+        key:
+          $ref: "#/components/schemas/LearningPathKey"
+        title:
+          type: string
+        tagline:
+          type: string
+        description:
+          type: string
+        feed:
+          type: string
+          description: How the path shapes the "For You" suggestions.
+        usesFocusField:
+          type: boolean
+          description: Deep Learner measures a single focus field.
+        milestones:
+          type: array
+          items:
+            type: object
+            properties:
+              level:
+                type: number
+              title:
+                type: string
+              goals:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LearningGoal"
+    LearningMilestone:
+      type: object
+      properties:
+        level:
+          type: number
+        title:
+          type: string
+        goals:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearningGoal"
+        progress:
+          type: number
+          description: Average completion of the goals (0-1).
+        reached:
+          type: boolean
+        reachedAt:
+          type: string
+          format: date-time
+          nullable: true
+    ReachedMilestone:
+      type: object
+      properties:
+        path:
+          $ref: "#/components/schemas/LearningPathKey"
+        pathTitle:
+          type: string
+        focusField:
+          type: string
+          nullable: true
+        level:
+          type: number
+        title:
+          type: string
+        total:
+          type: number
+        reachedAt:
+          type: string
+          format: date-time
+    LearningProfile:
+      type: object
+      properties:
+        path:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/LearningPathKey"
+          description: Null until the user picks a path.
+        title:
+          type: string
+          nullable: true
+        tagline:
+          type: string
+          nullable: true
+        focusField:
+          type: string
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        stats:
+          type: object
+          description: Lifetime learning activity (never reset).
+          properties:
+            contents:
+              type: number
+            correctAnswers:
+              type: number
+            papers:
+              type: number
+            fieldsExplored:
+              type: number
+            fields:
+              type: array
+              description: Per department, most active first.
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  contents:
+                    type: number
+                  correctAnswers:
+                    type: number
+                  papers:
+                    type: number
+        journey:
+          type: object
+          nullable: true
+          description: Null without a path.
+          properties:
+            level:
+              type: number
+              description: Milestones reached.
+            total:
+              type: number
+            completed:
+              type: boolean
+            next:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/LearningMilestone"
+            milestones:
+              type: array
+              items:
+                $ref: "#/components/schemas/LearningMilestone"
+        history:
+          type: array
+          description: Previous paths, most recent first (20 at most).
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              title:
+                type: string
+              focusField:
+                type: string
+                nullable: true
+              startedAt:
+                type: string
+                format: date-time
+                nullable: true
+              endedAt:
+                type: string
+                format: date-time
+              milestonesReached:
+                type: number
     Role:
       type: string
       enum: [College Student, Professor, Researcher, Learning Enthusiast, PhD Student]
@@ -2533,8 +2879,9 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Preference"
-        tracking:
-          $ref: "#/components/schemas/UserTracking"
+        learning:
+          type: object
+          description: Raw learning data; use `GET /user/{id}/learning` for the journey and history.
         castPublications:
           type: array
           items:
@@ -2564,8 +2911,16 @@ components:
         university:
           type: string
           description: Only stored for the Professor, PhD Student and Researcher roles.
+        path:
+          $ref: "#/components/schemas/LearningPathKey"
+        focusField:
+          type: string
+          description: Deep Learner only (a department name).
         objective:
-          $ref: "#/components/schemas/Objective"
+          deprecated: true
+          description: Legacy name of `path`.
+          allOf:
+            - $ref: "#/components/schemas/Objective"
       required: [email, password, username, role]
     UserUpdate:
       type: object
@@ -2588,8 +2943,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Preference"
-        tracking:
-          $ref: "#/components/schemas/UserTracking"
         castPublications:
           type: array
           items:
@@ -2674,12 +3027,14 @@ components:
           type: number
     UserTracking:
       type: object
+      description: >-
+        Legacy view of the learning path (app <= 1.0.5): `progress` / `target` sum the goals of the
+        next milestone; `history` is the number of contents per department.
       properties:
         objective:
           type: string
         progress:
           type: number
-          description: Questions answered correctly toward the learning path target (incremented by quizzes).
         target:
           type: number
         history:
@@ -2775,6 +3130,8 @@ components:
                 type: boolean
               correctAnswer:
                 type: string
+              department:
+                type: string
               xp:
                 type: number
         summary:
@@ -2836,6 +3193,11 @@ components:
                 type: string
               description:
                 type: string
+        newMilestones:
+          type: array
+          description: Learning path milestones reached thanks to this quiz.
+          items:
+            $ref: "#/components/schemas/ReachedMilestone"
         rewards:
           $ref: "#/components/schemas/Rewards"
     University:

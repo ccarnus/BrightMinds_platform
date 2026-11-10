@@ -9,6 +9,8 @@ const isValidEmail = require('../services/email_validator');
 const { sendMail } = require('../services/mailer');
 const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
 const rewardsService = require('../services/rewards');
+const learningService = require('../services/learning');
+const { recordContentConsumed } = require('../services/learning_activity');
 const { signToken } = require('../middleware/auth');
 const {
   messagePage,
@@ -31,33 +33,20 @@ const BCRYPT_ROUNDS = 10;
 const MIN_PASSWORD_LENGTH = 4;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const UNIVERSITY_ROLES = ['Professor', 'PhD Student', 'Researcher'];
-const OBJECTIVE_TARGETS = {
-  Follower: 5,
-  Explorer: 10,
-  'Deep Learner': 20,
-  Researcher: 30,
-  Career: 50,
-};
-const DEFAULT_OBJECTIVE = 'Explorer';
-// Fields a user may change on their own profile via PUT /user/:id.
+// Fields a user may change on their own profile via PUT /user/:id (never `learning` or `rewards`).
 const SELF_EDITABLE_FIELDS = [
   'username',
   'role',
   'university',
   'evaluation_list',
   'preferences',
-  'tracking',
   'castPublications',
   'articlePublications',
 ];
 const PUBLIC_LIST_FIELDS =
-  '_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences tracking castPublications articlePublications university isVerified';
-
-const isObjective = (value) => typeof value === 'string' && Object.hasOwn(OBJECTIVE_TARGETS, value);
-
-const getTargetValue = (objective) =>
-  isObjective(objective) ? OBJECTIVE_TARGETS[objective] : OBJECTIVE_TARGETS[DEFAULT_OBJECTIVE];
-
+  '_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences learning.path learning.focusField learning.stats castPublications articlePublications university isVerified';
+// Explorer suggestions from unexplored fields can span the whole catalog.
+const EXPLORER_SUGGESTION_LIMIT = 50;
 const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
 const normalizeContentType = (value) => {
@@ -112,7 +101,12 @@ exports.signup = async (req, res) => {
     throw new HttpError(409, 'An account with this email already exists.');
   }
 
-  const objective = isObjective(data.objective) ? data.objective : DEFAULT_OBJECTIVE;
+  // `objective` is the legacy name of `path`; unknown or retired paths are left for onboarding.
+  const path = learningService.resolvePathKey(data.path ?? data.objective);
+  const focusField =
+    path && learningService.getPath(path).usesFocusField && learningService.isField(data.focusField)
+      ? data.focusField
+      : null;
   const user = new User({
     email,
     password: await bcrypt.hash(data.password, BCRYPT_ROUNDS),
@@ -120,7 +114,12 @@ exports.signup = async (req, res) => {
     role: data.role,
     profilePictureUrl: mediaUrl(MEDIA_DIRS.profilePictures, req.file.filename),
     verificationToken: crypto.randomBytes(16).toString('hex'),
-    tracking: { objective, target: getTargetValue(objective) },
+    learning: {
+      version: learningService.LEARNING_VERSION,
+      path,
+      focusField,
+      startedAt: path ? new Date() : undefined,
+    },
   });
   if (UNIVERSITY_ROLES.includes(data.role)) {
     user.university = data.university;
@@ -336,7 +335,10 @@ exports.resetPassword = htmlRoute(async (req, res) => {
 
 // ---------------------------------------------------------------- Evaluation list
 
-/** Marks content as watched and counts it once in tracking.history (per department). */
+/**
+ * Marks content as watched. The first time, it counts in the learning stats (per department) and
+ * may reach a milestone of the learning path (`newMilestones`).
+ */
 exports.updateUserAddContentToList = async (req, res) => {
   const userId = req.params.id;
   assertObjectId(userId);
@@ -367,19 +369,11 @@ exports.updateUserAddContentToList = async (req, res) => {
     return res.status(200).json({ message: 'Content already in evaluation list.' });
   }
 
-  const category = content.department;
-  const history = await User.updateOne(
-    { _id: userId, 'tracking.history.category': category },
-    { $inc: { 'tracking.history.$.count': 1 } }
-  );
-  if (history.matchedCount === 0) {
-    await User.updateOne(
-      { _id: userId },
-      { $push: { 'tracking.history': { category, count: 1 } } }
-    );
-  }
-
-  return res.status(200).json({ message: 'Content added to evaluation list and history updated.' });
+  const newMilestones = await recordContentConsumed(userId, content.department);
+  return res.status(200).json({
+    message: 'Content added to evaluation list and history updated.',
+    newMilestones,
+  });
 };
 
 exports.updateUserRemoveContentFromList = async (req, res) => {
@@ -431,6 +425,7 @@ const emptyQuizResponse = (user, today, duplicate) => {
     previous: { xp, ...rewardsService.levelInfo(xp) },
     leveledUp: false,
     newBadges: [],
+    newMilestones: [],
     duplicate,
     rewards: rewardsService.serializeRewards(user, today),
   };
@@ -457,22 +452,28 @@ const parseQuizAnswers = (answers) => {
   }, []);
 };
 
-/** Loads the `evaluation` of evaluation-list items, keyed by content id. */
+/** Loads the `evaluation` and `department` of evaluation-list items, keyed by content id. */
 const loadEvaluations = async (items) => {
   const evaluations = new Map();
   await Promise.all(
     Object.entries(CONTENT_MODELS).map(async ([type, Model]) => {
       const ids = items.filter((item) => item.type === type).map((item) => item.contentid);
       if (ids.length === 0) return;
-      const docs = await Model.find({ _id: { $in: ids } }).select('evaluation');
-      docs.forEach((doc) => evaluations.set(String(doc._id), doc.evaluation));
+      const docs = await Model.find({ _id: { $in: ids } }).select('evaluation department');
+      docs.forEach((doc) =>
+        evaluations.set(String(doc._id), {
+          evaluation: doc.evaluation,
+          department: doc.department,
+        })
+      );
     })
   );
   return evaluations;
 };
 
 /**
- * Grades a quiz against the stored correct answers and awards XP, streak and badges.
+ * Grades a quiz against the stored correct answers and awards XP, streak and badges; correct
+ * answers also count in the learning stats and may reach a learning path milestone.
  * Only questions still pending in the evaluation list count, so replays earn nothing;
  * correct answers are marked as answered (wrong ones stay pending for a later quiz).
  * Resending the last `quizId` earns nothing and answers `duplicate: true`.
@@ -495,13 +496,14 @@ exports.submitQuiz = async (req, res) => {
     eligible.map((answer) => pending.get(answer.contentId))
   );
   const graded = eligible
-    .filter((answer) => evaluations.get(answer.contentId)?.correct)
+    .filter((answer) => evaluations.get(answer.contentId)?.evaluation?.correct)
     .map((answer) => {
-      const correctAnswer = evaluations.get(answer.contentId).correct;
+      const { evaluation, department } = evaluations.get(answer.contentId);
       return {
         contentId: answer.contentId,
-        correct: answer.response === correctAnswer,
-        correctAnswer,
+        correct: answer.response === evaluation.correct,
+        correctAnswer: evaluation.correct,
+        department,
       };
     });
 
@@ -515,6 +517,8 @@ exports.submitQuiz = async (req, res) => {
     .forEach((result) => {
       pending.get(result.contentId).answered = true;
     });
+  learningService.applyQuizAnswers(user.learning, quiz.results);
+  const newMilestones = learningService.recordMilestones(user.learning);
   const outcome = rewardsService.applyQuiz(user, quiz, today);
   if (quizId) user.rewards.lastQuizId = quizId;
 
@@ -538,6 +542,7 @@ exports.submitQuiz = async (req, res) => {
       perfect: quiz.perfect,
     },
     ...outcome,
+    newMilestones,
     duplicate: false,
     rewards: rewardsService.serializeRewards(user, today),
   });
@@ -674,35 +679,71 @@ exports.removeUserBookmark = async (req, res) => {
   res.status(200).json({ message: 'Element removed from bookmarks.' });
 };
 
-// ---------------------------------------------------------------- Preferences & tracking
+// ---------------------------------------------------------------- Preferences & suggestions
 
-/**
- * Casts from the user's preferred departments: highest weight first, ties in preference order,
- * then by _id within a department.
- */
-exports.getSuggestedForYou = async (req, res) => {
-  const user = await findUserOr404(req.params.id, 'preferences');
-  if (!user.preferences?.length) throw notFound('No preferences set for user.');
-
-  // Rank per department: its best weight, and the position of the preference giving it.
+/** Preferred departments, highest weight first (ties in preference order; duplicates use the best). */
+const rankedPreferences = (preferences = []) => {
   const rankByDepartment = new Map();
-  user.preferences.forEach((pref, index) => {
+  preferences.forEach((pref, index) => {
     const current = rankByDepartment.get(pref.category);
     if (!current || pref.weight > current.weight) {
       rankByDepartment.set(pref.category, { weight: pref.weight, index });
     }
   });
+  return [...rankByDepartment.entries()]
+    .sort(([, a], [, b]) => b.weight - a.weight || a.index - b.index)
+    .map(([department]) => department);
+};
 
-  const casts = await Cast.find({ department: { $in: [...rankByDepartment.keys()] } })
+/** Casts of `departments` in that department order, by _id within a department. */
+const castsInDepartmentOrder = async (departments) => {
+  if (departments.length === 0) return [];
+  const order = new Map(departments.map((department, index) => [department, index]));
+  const casts = await Cast.find({ department: { $in: departments } })
     .sort({ _id: 1 })
     .lean();
   // Array.prototype.sort is stable: casts keep _id order within a department.
-  casts.sort((a, b) => {
-    const rankA = rankByDepartment.get(a.department);
-    const rankB = rankByDepartment.get(b.department);
-    return rankB.weight - rankA.weight || rankA.index - rankB.index;
-  });
-  res.status(200).json(casts);
+  return casts.sort((a, b) => order.get(a.department) - order.get(b.department));
+};
+
+/**
+ * "For You" casts, shaped by the learning path:
+ * - Follower: the newest casts from the preferred fields;
+ * - Explorer: the best-rated casts from fields not explored yet, then the explored preferred fields;
+ * - Deep Learner: the focus field first, then the other preferred fields;
+ * - otherwise: preferred fields by weight (ties in preference order), by _id within a field.
+ * 404 when there is nothing to base suggestions on.
+ */
+exports.getSuggestedForYou = async (req, res) => {
+  const user = await findUserOr404(req.params.id, 'preferences learning');
+  const preferred = rankedPreferences(user.preferences);
+  const path = user.learning?.path;
+
+  if (path === 'explorer') {
+    const explored = learningService.exploredFields(user.learning);
+    const unexplored = await Cast.find({ department: { $nin: explored } })
+      .sort({ 'rating.value': -1, dateadded: -1, _id: 1 })
+      .limit(EXPLORER_SUGGESTION_LIMIT)
+      .lean();
+    const familiar = await castsInDepartmentOrder(
+      preferred.filter((department) => explored.includes(department))
+    );
+    return res.status(200).json([...unexplored, ...familiar]);
+  }
+
+  const focusField = path === 'deep_learner' ? user.learning.focusField : null;
+  const departments = focusField
+    ? [focusField, ...preferred.filter((department) => department !== focusField)]
+    : preferred;
+  if (departments.length === 0) throw notFound('No preferences set for user.');
+
+  if (path === 'follower') {
+    const newest = await Cast.find({ department: { $in: departments } })
+      .sort({ dateadded: -1, _id: -1 })
+      .lean();
+    return res.status(200).json(newest);
+  }
+  res.status(200).json(await castsInDepartmentOrder(departments));
 };
 
 exports.getUserPreferences = async (req, res) => {
@@ -734,23 +775,4 @@ exports.updateUserPreferences = async (req, res) => {
   });
   await user.save();
   res.status(200).json({ message: 'User preferences updated.', preferences: user.preferences });
-};
-
-exports.updateUserTracking = async (req, res) => {
-  const { objective } = req.body;
-  if (!isObjective(objective)) {
-    throw badRequest(
-      'Invalid objective value. Must be one of Follower, Explorer, Deep Learner, Career, or Researcher.'
-    );
-  }
-  const user = await findUserOr404(req.params.id);
-  user.tracking.objective = objective;
-  user.tracking.target = getTargetValue(objective);
-  await user.save();
-  res.status(200).json({ message: 'Tracking updated successfully.', tracking: user.tracking });
-};
-
-exports.getUserTracking = async (req, res) => {
-  const user = await findUserOr404(req.params.id, 'tracking');
-  res.status(200).json({ tracking: user.tracking, target: user.tracking.target });
 };

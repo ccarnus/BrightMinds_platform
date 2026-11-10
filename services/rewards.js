@@ -120,9 +120,8 @@ const BADGES = [
   {
     key: 'objective_reached',
     title: 'Goal Getter',
-    description: 'Reach the target of your learning path.',
-    earned: ({ tracking }) =>
-      !!tracking && tracking.target > 0 && tracking.progress >= tracking.target,
+    description: 'Reach a milestone of your learning path.',
+    earned: ({ learning }) => (learning?.milestones?.length || 0) > 0,
   },
 ];
 
@@ -187,7 +186,7 @@ const streakAfterQuiz = (streak, today) => {
 };
 
 /**
- * Applies a scored quiz to a user document (rewards + learning path progress) and returns what changed.
+ * Applies a scored quiz to a user document's rewards and returns what changed.
  * Mutates `user`; the caller saves it.
  */
 const applyQuiz = (user, quiz, today) => {
@@ -228,11 +227,9 @@ const applyQuiz = (user, quiz, today) => {
   rewards.streak.best = streak.best;
   rewards.streak.lastQuizDay = streak.lastQuizDay;
 
-  // Correct answers move the learning path forward (Track tab gauge).
-  user.tracking.progress = (user.tracking.progress || 0) + quiz.correct;
-
+  // The learning stats (services/learning.js) are updated by the caller before the badges are checked.
   const owned = new Set(rewards.badges.map((badge) => badge.key));
-  const context = { stats: rewards, quiz, tracking: user.tracking };
+  const context = { stats: rewards, quiz, learning: user.learning };
   const newBadges = BADGES.filter((badge) => !owned.has(badge.key) && badge.earned(context));
   const earnedAt = new Date();
   newBadges.forEach((badge) => rewards.badges.push({ key: badge.key, earnedAt }));

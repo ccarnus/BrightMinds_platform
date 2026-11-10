@@ -62,6 +62,9 @@ output exists, so retries resume where they stopped.
 - Quiz rewards: `POST /user/:id/quiz` grades answers server-side and awards XP, levels, a daily streak and
   badges (rules in `services/rewards.js`); `GET /user/:id/rewards` returns them. Both accept
   `utcOffsetMinutes` so streaks follow the user's local day; a client `quizId` makes retries harmless.
+- Learning paths: `GET /learning/paths` (catalog), `GET` / `PUT /user/:id/learning` (profile, milestone journey,
+  path change) and `POST /user/:id/learning/papers` (opened research papers). Accounts still on the legacy
+  `tracking` field are migrated automatically when the server starts.
 
 ## Project layout
 

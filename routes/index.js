@@ -6,4 +6,5 @@ module.exports = {
   '/university': require('./university_route'),
   '/virtual/lab': require('./virtual_lab_route'),
   '/topic': require('./topic_route'),
+  '/learning': require('./learning_route'),
 };

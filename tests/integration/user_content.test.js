@@ -9,7 +9,7 @@ useTestDatabase();
 const MISSING_ID = '507f1f77bcf86cd799439011';
 
 describe('evaluation list', () => {
-  test('adding content marks it watched and counts it once in tracking history', async () => {
+  test('adding content marks it watched and counts it once in the learning stats', async () => {
     const user = await createUser();
     const cast = await createCast({ department: 'Chemistry' });
 
@@ -27,12 +27,13 @@ describe('evaluation list', () => {
       watched: true,
       answered: false,
     });
-    expect(updated.tracking.history).toEqual([
-      expect.objectContaining({ category: 'Chemistry', count: 1 }),
+    expect(updated.learning.stats.contents).toBe(1);
+    expect(updated.learning.stats.fields).toEqual([
+      expect.objectContaining({ field: 'Chemistry', contents: 1 }),
     ]);
   });
 
-  test('history counts per department across content', async () => {
+  test('stats count per department across content', async () => {
     const user = await createUser();
     const article = await createArticle({ department: 'Chemistry' });
     const cast = await createCast({ department: 'Chemistry' });
@@ -45,7 +46,10 @@ describe('evaluation list', () => {
       .send({ contentId: cast._id, type: 'cast' })
       .expect(200);
     const updated = await User.findById(user._id).lean();
-    expect(updated.tracking.history[0].count).toBe(2);
+    expect(updated.learning.stats.contents).toBe(2);
+    expect(updated.learning.stats.fields).toEqual([
+      expect.objectContaining({ field: 'Chemistry', contents: 2 }),
+    ]);
   });
 
   test('validates type, content and user', async () => {
@@ -241,33 +245,54 @@ describe('preferences and suggestions', () => {
   });
 });
 
-describe('tracking', () => {
-  test('updating the objective sets the matching target', async () => {
-    const user = await createUser();
-    const res = await request(app)
-      .put(`/user/${user._id}/update/tracking`)
-      .send({ objective: 'Deep Learner' })
-      .expect(200);
-    expect(res.body.tracking).toMatchObject({ objective: 'Deep Learner', target: 20 });
+describe('legacy tracking (app <= 1.0.5)', () => {
+  test('objectives map to learning paths, "DeepLearner" included', async () => {
+    const user = await createUser({
+      preferences: [{ category: 'Chemistry', weight: 100, count: 1 }],
+    });
+    for (const objective of ['Deep Learner', 'DeepLearner']) {
+      const res = await request(app)
+        .put(`/user/${user._id}/update/tracking`)
+        .send({ objective })
+        .expect(200);
+      // progress/target describe the first Deep Learner milestone (3 contents + 2 answers).
+      expect(res.body.tracking).toMatchObject({
+        objective: 'Deep Learner',
+        progress: 0,
+        target: 5,
+      });
+    }
+    const saved = await User.findById(user._id).lean();
+    expect(saved.learning).toMatchObject({ path: 'deep_learner', focusField: 'Chemistry' });
 
     const read = await request(app).get(`/user/${user._id}/tracking`).expect(200);
-    expect(read.body.target).toBe(20);
+    expect(read.body).toMatchObject({ tracking: { objective: 'Deep Learner' }, target: 5 });
   });
 
-  test('rejects unknown objectives', async () => {
-    const user = await createUser();
-    await request(app)
-      .put(`/user/${user._id}/update/tracking`)
-      .send({ objective: 'Napper' })
-      .expect(400);
+  test('users without a path read as Explorer, with their field history', async () => {
+    const user = await createUser({
+      learning: { stats: { contents: 2, fields: [{ field: 'Chemistry', contents: 2 }] } },
+    });
+    const { body } = await request(app).get(`/user/${user._id}/tracking`).expect(200);
+    expect(body.tracking).toEqual({
+      objective: 'Explorer',
+      // Wanderer: 2 fields + 3 contents; 1 field explored and 2 contents so far.
+      progress: 3,
+      target: 5,
+      history: [{ category: 'Chemistry', count: 2 }],
+    });
   });
 
-  test('inherited object keys are not valid objectives', async () => {
+  test('rejects unknown and retired objectives', async () => {
     const user = await createUser();
-    await request(app)
+    for (const objective of ['Napper', 'toString']) {
+      await request(app).put(`/user/${user._id}/update/tracking`).send({ objective }).expect(400);
+    }
+    const res = await request(app)
       .put(`/user/${user._id}/update/tracking`)
-      .send({ objective: 'toString' })
+      .send({ objective: 'Career' })
       .expect(400);
+    expect(res.body.message).toMatch(/Career path is no longer available/);
   });
 });
 

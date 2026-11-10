@@ -25,7 +25,7 @@ npm run check          # lint + format check + tests — run before declaring wo
 | `config/index.js`      | **Only** place that reads `process.env`                                                           |
 | `routes/`              | One router per resource; `routes/index.js` maps mount prefix → router                             |
 | `controllers/`         | Request handlers (thin: validate, call models/services, respond)                                  |
-| `services/`            | Business logic & integrations (OpenAI, mail, media files, topics, metrics, quiz rewards)          |
+| `services/`            | Business logic & integrations (OpenAI, mail, media files, topics, metrics, rewards, learning)     |
 | `queues/`              | Bull queues; both run `services/ai_pipeline.js` (daily retry: `services/ai_retry.js`)             |
 | `middleware/`          | `auth` (JWT), `upload` (multer), `error_handler`, `rate_limit`                                    |
 | `models/`              | Mongoose schemas                                                                                  |
@@ -57,6 +57,14 @@ npm run check          # lint + format check + tests — run before declaring wo
   `user.rewards` (never add it to `SELF_EDITABLE_FIELDS`). The app mirrors the XP/level rules in
   `src/features/track/utils/rewards.js` for live previews — change both together. Badge icons live in the
   app (`BADGE_STYLES`): add one there when adding a badge.
+- **Learning paths**: `services/learning.js` holds the path catalog (`follower`, `explorer`, `deep_learner`,
+  `researcher`; keys are stable, the app keys its visuals on them) and the pure milestone rules: goals read
+  lifetime `user.learning.stats`, so progress never resets when switching path. Accept keys and display names via
+  `resolvePathKey` (legacy "DeepLearner" included); Career is retired (`RETIRED_PATHS`). Concurrent counters go
+  through `services/learning_activity.js` (atomic `$inc`, milestones recorded once). `user.learning` is never
+  self-editable. The legacy `tracking` field is migrated at server start by `services/learning_migration.js`
+  (idempotent, keyed on `learning.version`); `GET /user/:id/tracking` and `PUT /user/:id/update/tracking` stay as
+  derived views for app versions <= 1.0.5.
 - **Config**: new env var → `config/index.js` + `.env.example` (+ README if operators must set it).
 - **Units**: cast and article `duration` are in minutes.
 - **Style**: Prettier (single quotes, 100 cols) + ESLint. Short JSDoc on non-obvious functions; no noise comments.

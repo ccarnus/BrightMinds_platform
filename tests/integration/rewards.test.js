@@ -63,7 +63,11 @@ describe('POST /user/:id/quiz', () => {
 
     const saved = await User.findById(user._id).lean();
     expect(saved.evaluation_list.map((item) => item.answered)).toEqual([true, true, false]);
-    expect(saved.tracking.progress).toBe(2);
+    // Correct answers count in the learning stats, per department.
+    expect(saved.learning.stats.correctAnswers).toBe(2);
+    expect(saved.learning.stats.fields).toEqual([
+      expect.objectContaining({ field: 'PhysicsandAstronomy', correctAnswers: 2 }),
+    ]);
     expect(saved.rewards.badges).toEqual([expect.objectContaining({ key: 'first_quiz' })]);
   });
 
