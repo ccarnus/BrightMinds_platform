@@ -24,10 +24,10 @@ const printStatus = async () => {
 };
 
 const check = async () => {
-  const { chatModel, imageModel, transcriptionModel, reasoningEffort } = config.openai;
+  const { chatModel, transcriptionModel, reasoningEffort } = config.openai;
   console.log(`Key: ${config.openai.apiKey ? 'set' : 'MISSING'}`);
   let ok = true;
-  for (const model of [chatModel, imageModel, transcriptionModel]) {
+  for (const model of [chatModel, transcriptionModel]) {
     try {
       await callOpenAI('checkModel', (client) => client.models.retrieve(model));
       console.log(`  OK      model ${model}`);

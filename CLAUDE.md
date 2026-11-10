@@ -2,8 +2,9 @@
 
 BrightMinds backend: REST API (Express 5, Mongoose 8, Node 22) for the BrightMinds mobile app.
 Content = **casts** (videos) and **articles**, enriched in the background with OpenAI
-(transcription + subtitles, quiz question, department, image; see README "AI processing") and classified
-into OpenAlex **topics** whose impact/activity scores are recomputed weekly.
+(transcription + subtitles, quiz question, department; see README "AI processing") and classified
+into OpenAlex **topics** whose impact/activity scores are recomputed weekly. Images are never
+generated: casts use a frame of their video, articles a cover uploaded by the author.
 
 ## Commands
 
@@ -48,6 +49,10 @@ npm run check          # lint + format check + tests — run before declaring wo
   (e.g. some updates return 201). Do not change them without being asked.
 - **Files**: uploads only through `middleware/upload.js`; build URLs/paths with `services/media.js`
   (`mediaUrl`, `mediaPathFromUrl`, `deleteMediaByUrl`). Never join user input into a path.
+- **Images**: never generate images (no image model). Cast images are video frames from
+  `services/thumbnail.js` (`createCastThumbnail`: `time` = author's moment, omitted = automatic;
+  files `thumb_*.jpg`, which the startup backfill uses to recognise converted casts). Article
+  covers are uploads re-encoded by `services/uploaded_image.js`. Neither URL is client-editable.
 - **Auth**: protect write routes with `authenticate`, per-user routes with `[authenticate, requireSelf('id')]`.
   Enforcement is controlled by `AUTH_REQUIRED` (currently off in production until the app sends tokens).
 - **Topics**: always go through `services/topics.js` (`createTopicIfNotExist`, `removeExistingTopic`,

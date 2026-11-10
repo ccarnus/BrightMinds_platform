@@ -5,6 +5,7 @@ const app = require('./app');
 const { scheduleWeeklyImpactUpdate } = require('./services/topic_indicator_computor');
 const { scheduleDailyAIRetry } = require('./services/ai_retry');
 const { migrateLearningProfiles } = require('./services/learning_migration');
+const { backfillCastThumbnails } = require('./services/thumbnail_backfill');
 const { castQueue, startCastWorker } = require('./queues/cast_queue');
 const { articleQueue, startArticleWorker } = require('./queues/article_queue');
 
@@ -36,6 +37,16 @@ const start = async () => {
   const server = app.listen(config.port, () => {
     console.log(`Server listening on port ${config.port} (${config.env}).`);
   });
+
+  // Casts whose image is not a frame of their video (former AI illustrations) get an automatic
+  // thumbnail, in the background; already converted casts are skipped.
+  backfillCastThumbnails()
+    .then(({ replaced, failed }) => {
+      if (replaced || failed) {
+        console.log(`Cast thumbnails: ${replaced} replaced, ${failed} could not be extracted.`);
+      }
+    })
+    .catch((error) => console.error('Cast thumbnail backfill failed:', error));
 
   const shutdown = async (signal) => {
     console.log(`${signal} received, shutting down.`);

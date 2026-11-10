@@ -43,11 +43,9 @@ const config = {
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
-    // Quiz, department, topic and image brief (structured outputs).
+    // Quiz question, department and topic (structured outputs).
     chatModel: process.env.OPENAI_CHAT_MODEL || 'gpt-6.1-terra',
     reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'low',
-    imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2.6-flare',
-    imageQuality: process.env.OPENAI_IMAGE_QUALITY || 'medium',
     // whisper-1 is the only model returning timestamps (needed for subtitles). Others give text only.
     transcriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1',
   },

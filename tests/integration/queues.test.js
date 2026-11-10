@@ -29,7 +29,7 @@ beforeEach(() => {
   });
 });
 
-test('cast job stores transcript, subtitles, evaluation and image', async () => {
+test('cast job stores transcript, subtitles and evaluation, and never generates an image', async () => {
   const cast = await createCast({ description: '', casturl });
   const castId = cast._id.toString();
 
@@ -40,7 +40,7 @@ test('cast job stores transcript, subtitles, evaluation and image', async () => 
   expect(updated.subtitleurl).toBe(`http://api.test/backend/media/cast_subtitles/${castId}.srt`);
   expect(mediaFileExists(MEDIA_DIRS.castSubtitles, `${castId}.srt`)).toBe(true);
   expect(updated.evaluation.question).toBe('Mock question?');
-  expect(updated.castimageurl).toBe('http://api.test/backend/media/cast_images/cast_test.jpg');
+  expect(updated.castimageurl).toBeUndefined();
   expect(updated.topic).toBe('Quantum Mechanics'); // chosen by the author: untouched
   expect(updated.processing.status).toBe('done');
 });
@@ -101,9 +101,7 @@ test('article job tolerates deleted articles and completes the others', async ()
   await processArticleJob(job({ articleId: article._id.toString() }));
   const updated = await Article.findById(article._id);
   expect(updated.evaluation.question).toBe('Mock question?');
-  expect(updated.articleimageurl).toBe(
-    'http://api.test/backend/media/article_images/article_test.jpg'
-  );
+  expect(updated.articleimageurl).toBeUndefined(); // covers are uploaded by authors only
   expect(updated.topic).toBe('Mock Topic');
   expect(updated.processing.status).toBe('done');
 });

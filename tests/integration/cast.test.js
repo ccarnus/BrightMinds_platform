@@ -2,6 +2,9 @@ const request = require('supertest');
 
 jest.mock('../../services/video', () => ({ getVideoDurationInMinutes: jest.fn() }));
 const { getVideoDurationInMinutes } = require('../../services/video');
+// Real ffmpeg extraction is covered by tests/unit/thumbnail.test.js.
+jest.mock('../../services/thumbnail', () => ({ createCastThumbnail: jest.fn() }));
+const { createCastThumbnail } = require('../../services/thumbnail');
 
 const app = require('../../app');
 const Cast = require('../../models/cast_model');
@@ -20,11 +23,20 @@ const {
 useTestDatabase();
 
 const VIDEO = Buffer.from('fake-mp4-bytes');
+let thumbnails = 0;
 
 beforeEach(() => {
   castQueue.jobs.length = 0;
   getVideoDurationInMinutes.mockReset().mockResolvedValue(3.5);
+  createCastThumbnail.mockReset().mockImplementation(async () => {
+    thumbnails += 1;
+    const filename = `thumb_${thumbnails}.jpg`;
+    createMediaFile(MEDIA_DIRS.castImages, filename);
+    return filename;
+  });
 });
+
+const imageUrl = (filename) => `http://api.test/backend/media/cast_images/${filename}`;
 
 const postCast = (cast, { withVideo = true } = {}) => {
   const req = request(app).post('/cast').field('cast', JSON.stringify(cast));
@@ -63,6 +75,40 @@ describe('POST /cast', () => {
     expect((await User.findById(author._id)).castPublications.map(String)).toEqual([res.body.id]);
     expect(castQueue.jobs).toEqual([{ castId: res.body.id }]);
     expect(cast.processing.status).toBe('pending');
+
+    // API upload without a chosen moment: the thumbnail is picked automatically from the video.
+    expect(createCastThumbnail).toHaveBeenCalledWith(expect.stringContaining('my_talk_'), {
+      duration: 210,
+      time: undefined,
+    });
+    expect(cast.castimageurl).toBe(imageUrl(`thumb_${thumbnails}.jpg`));
+    expect(res.body.castimageurl).toBe(cast.castimageurl);
+  });
+
+  test('uses the moment of the video chosen by the author', async () => {
+    const author = await createUser();
+    await postCast(castPayload(author, { thumbnailTime: 12.5 })).expect(201);
+    expect(createCastThumbnail).toHaveBeenCalledWith(expect.any(String), {
+      duration: 210,
+      time: 12.5,
+    });
+  });
+
+  test.each([-1, 'abc', true])('rejects thumbnailTime %p with 400', async (thumbnailTime) => {
+    const author = await createUser();
+    await postCast(castPayload(author, { thumbnailTime })).expect(400);
+    expect(await Cast.countDocuments()).toBe(0);
+    expect(createCastThumbnail).not.toHaveBeenCalled();
+  });
+
+  test('a video without readable frames still creates the cast, without image', async () => {
+    createCastThumbnail.mockRejectedValue(new Error('No frame could be read from the video.'));
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const author = await createUser();
+    const res = await postCast(castPayload(author)).expect(201);
+    expect((await Cast.findById(res.body.id)).castimageurl).toBeUndefined();
+    expect(res.body.castimageurl).toBeNull();
+    console.error.mockRestore();
   });
 
   test('without topic, leaves a placeholder for the worker', async () => {
@@ -180,9 +226,10 @@ describe('PUT /cast/:id', () => {
     expect(await Topic.findOne({ name: 'New', departmentName: 'Chemistry' })).not.toBeNull();
   });
 
-  test('replacing the video deletes the previous file', async () => {
+  test('replacing the video deletes the previous files and takes a new thumbnail', async () => {
     const oldUrl = createMediaFile(MEDIA_DIRS.castVideos, 'old.mp4');
-    const cast = await createCast({ casturl: oldUrl });
+    const oldImage = createMediaFile(MEDIA_DIRS.castImages, 'old.jpg');
+    const cast = await createCast({ casturl: oldUrl, castimageurl: oldImage });
     getVideoDurationInMinutes.mockResolvedValue(9);
 
     await request(app)
@@ -195,6 +242,60 @@ describe('PUT /cast/:id', () => {
     expect(updated.duration).toBe(9);
     expect(updated.casturl).not.toBe(oldUrl);
     expect(mediaFileExists(MEDIA_DIRS.castVideos, 'old.mp4')).toBe(false);
+    expect(createCastThumbnail).toHaveBeenCalledWith(expect.stringContaining('new_'), {
+      duration: 540,
+      time: undefined,
+    });
+    expect(updated.castimageurl).toBe(imageUrl(`thumb_${thumbnails}.jpg`));
+    expect(mediaFileExists(MEDIA_DIRS.castImages, 'old.jpg')).toBe(false);
+  });
+
+  test('thumbnailTime alone picks a new moment of the current video', async () => {
+    const cast = await createCast({
+      casturl: createMediaFile(MEDIA_DIRS.castVideos, 'talk.mp4'),
+      castimageurl: createMediaFile(MEDIA_DIRS.castImages, 'before.jpg'),
+      duration: 2,
+    });
+
+    await request(app)
+      .put(`/cast/${cast._id}`)
+      .field('cast', JSON.stringify({ thumbnailTime: 42 }))
+      .expect(200);
+
+    expect(createCastThumbnail).toHaveBeenCalledWith(expect.stringContaining('talk.mp4'), {
+      duration: 120,
+      time: 42,
+    });
+    expect((await Cast.findById(cast._id)).castimageurl).toBe(imageUrl(`thumb_${thumbnails}.jpg`));
+    expect(mediaFileExists(MEDIA_DIRS.castImages, 'before.jpg')).toBe(false);
+  });
+
+  test('a thumbnail that cannot be read is reported and the previous one kept', async () => {
+    createCastThumbnail.mockRejectedValue(new Error('No frame could be read from the video.'));
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const before = createMediaFile(MEDIA_DIRS.castImages, 'kept.jpg');
+    const cast = await createCast({ castimageurl: before });
+
+    await request(app)
+      .put(`/cast/${cast._id}`)
+      .field('cast', JSON.stringify({ thumbnailTime: 3 }))
+      .expect(422);
+
+    expect((await Cast.findById(cast._id)).castimageurl).toBe(before);
+    expect(mediaFileExists(MEDIA_DIRS.castImages, 'kept.jpg')).toBe(true);
+    console.error.mockRestore();
+  });
+
+  test('the image cannot be set directly: it always comes from the video', async () => {
+    const cast = await createCast({ castimageurl: imageUrl('thumb_original.jpg') });
+    await request(app)
+      .put(`/cast/${cast._id}`)
+      .field('cast', JSON.stringify({ castimageurl: 'https://example.com/ai.png', title: 'New' }))
+      .expect(200);
+    const updated = await Cast.findById(cast._id);
+    expect(updated.title).toBe('New');
+    expect(updated.castimageurl).toBe(imageUrl('thumb_original.jpg'));
+    expect(createCastThumbnail).not.toHaveBeenCalled();
   });
 
   test('validates input', async () => {
@@ -203,6 +304,10 @@ describe('PUT /cast/:id', () => {
     await request(app)
       .put(`/cast/${cast._id}`)
       .field('cast', JSON.stringify({ department: 'Alchemy' }))
+      .expect(400);
+    await request(app)
+      .put(`/cast/${cast._id}`)
+      .field('cast', JSON.stringify({ thumbnailTime: -5 }))
       .expect(400);
     await request(app).put('/cast/507f1f77bcf86cd799439011').field('cast', '{}').expect(404);
   });

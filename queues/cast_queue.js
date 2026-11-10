@@ -1,4 +1,4 @@
-// Background AI processing of new casts (transcript, subtitles, question, topic, image).
+// Background AI processing of new casts (transcript, subtitles, question, topic).
 const { createQueue } = require('./create_queue');
 const { runAIJob } = require('../services/ai_pipeline');
 

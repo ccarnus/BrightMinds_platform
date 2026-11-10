@@ -1,6 +1,7 @@
 const Article = require('../models/article_model');
 const computeDuration = require('../services/compute_duration');
-const { MEDIA_DIRS, deleteMediaByUrl } = require('../services/media');
+const { MEDIA_DIRS, deleteMediaByUrl, mediaUrl } = require('../services/media');
+const { saveUploadedImage } = require('../services/uploaded_image');
 const {
   PENDING_TOPIC,
   createTopicIfNotExist,
@@ -17,7 +18,14 @@ const {
 } = require('../services/content');
 const { articleQueue } = require('../queues/article_queue');
 const { enqueue } = require('../queues/create_queue');
-const { assertObjectId, notFound, pick, isNonEmptyString } = require('../utils/http');
+const {
+  assertObjectId,
+  badRequest,
+  notFound,
+  parseJsonField,
+  pick,
+  isNonEmptyString,
+} = require('../utils/http');
 
 const EDITABLE_FIELDS = [
   'title',
@@ -28,8 +36,9 @@ const EDITABLE_FIELDS = [
   'visibility',
   'link',
 ];
-// Updates may also replace the generated parts (the previous API accepted any field).
-const UPDATE_FIELDS = [...EDITABLE_FIELDS, 'evaluation', 'articleimageurl'];
+// Updates may also replace the generated question (the previous API accepted any field). The cover
+// image only changes through an uploaded file.
+const UPDATE_FIELDS = [...EDITABLE_FIELDS, 'evaluation'];
 
 const findArticleOr404 = async (id) => {
   assertObjectId(id);
@@ -38,23 +47,49 @@ const findArticleOr404 = async (id) => {
   return article;
 };
 
-/** Saves the article; question, image, department and topic are generated in the background. */
+/** Article fields: a multipart `article` JSON field, or plain JSON / form fields. */
+const readArticleData = (body) =>
+  body?.article !== undefined ? parseJsonField(body, 'article') : body || {};
+
+/** Stores the uploaded cover image (re-encoded, original upload deleted) and returns its URL. */
+const storeCoverImage = async (req) => {
+  const filename = await saveUploadedImage(req.file.path, {
+    dir: MEDIA_DIRS.articleImages,
+    prefix: 'article',
+  });
+  req.file = undefined;
+  return mediaUrl(MEDIA_DIRS.articleImages, filename);
+};
+
+/**
+ * Multipart: `image` file (the cover, required) + `article` JSON field. The question, department
+ * (if not given) and topic (if not given) are generated in the background.
+ */
 exports.createArticle = async (req, res) => {
-  const body = req.body;
-  assertValidTitle(body.title);
-  const department = resolveDepartment(body.department);
-  const topicProvided = isNonEmptyString(body.topic);
+  if (!req.file) throw badRequest('A cover image is required (multipart field "image").');
+  const data = readArticleData(req.body);
+  assertValidTitle(data.title);
+  const department = resolveDepartment(data.department);
+  const topicProvided = isNonEmptyString(data.topic);
 
   const article = new Article({
-    ...pick(body, EDITABLE_FIELDS),
+    ...pick(data, EDITABLE_FIELDS),
     department,
-    topic: topicProvided ? body.topic.trim() : PENDING_TOPIC,
-    duration: typeof body.duration === 'number' ? body.duration : computeDuration(body.description),
+    topic: topicProvided ? data.topic.trim() : PENDING_TOPIC,
+    duration: typeof data.duration === 'number' ? data.duration : computeDuration(data.description),
   });
-  if (body.dateadded) {
-    article.dateadded = new Date(body.dateadded);
+  if (data.dateadded) {
+    article.dateadded = new Date(data.dateadded);
   }
-  await article.save();
+  // Invalid articles are rejected before spending time on the image.
+  await article.validate();
+  article.articleimageurl = await storeCoverImage(req);
+  try {
+    await article.save();
+  } catch (error) {
+    await deleteMediaByUrl(article.articleimageurl, MEDIA_DIRS.articleImages);
+    throw error;
+  }
 
   if (topicProvided && isAssignedTopic({ name: article.topic, departmentName: department })) {
     await createTopicIfNotExist({
@@ -70,6 +105,7 @@ exports.createArticle = async (req, res) => {
   res.status(201).json({
     response: 'Article created and topic updated (or pending generation).',
     id: article._id,
+    articleimageurl: article.articleimageurl,
   });
 };
 
@@ -81,21 +117,25 @@ exports.getOneArticle = async (req, res) => {
   res.status(200).json(await findArticleOr404(req.params.id));
 };
 
+/** JSON, or multipart with an optional new cover `image` + `article` JSON field. */
 exports.updateOneArticle = async (req, res) => {
   const article = await findArticleOr404(req.params.id);
-  const body = req.body;
-  assertValidTitle(body.title);
+  const data = readArticleData(req.body);
+  assertValidTitle(data.title);
 
   const department =
-    body.department === undefined ? article.department : resolveDepartment(body.department);
-  const topic = isNonEmptyString(body.topic) ? body.topic.trim() : article.topic;
+    data.department === undefined ? article.department : resolveDepartment(data.department);
+  const topic = isNonEmptyString(data.topic) ? data.topic.trim() : article.topic;
   const previousTopic = { name: article.topic, departmentName: article.department };
+  const previousImageUrl = article.articleimageurl;
 
-  Object.assign(article, pick(body, UPDATE_FIELDS), { department, topic });
-  if (typeof body.duration === 'number') article.duration = body.duration;
-  if (body.dateadded) article.dateadded = new Date(body.dateadded);
+  Object.assign(article, pick(data, UPDATE_FIELDS), { department, topic });
+  if (typeof data.duration === 'number') article.duration = data.duration;
+  if (data.dateadded) article.dateadded = new Date(data.dateadded);
   // Validate before touching topics so a rejected update leaves them consistent.
   await article.validate();
+  const newImageUrl = req.file ? await storeCoverImage(req) : undefined;
+  if (newImageUrl) article.articleimageurl = newImageUrl;
 
   await moveContentTopic({
     from: previousTopic,
@@ -103,7 +143,13 @@ exports.updateOneArticle = async (req, res) => {
     contentId: article._id,
     contentType: 'article',
   });
-  await article.save();
+  try {
+    await article.save();
+  } catch (error) {
+    if (newImageUrl) await deleteMediaByUrl(newImageUrl, MEDIA_DIRS.articleImages);
+    throw error;
+  }
+  if (newImageUrl) await deleteMediaByUrl(previousImageUrl, MEDIA_DIRS.articleImages);
 
   res.status(201).json({ response: 'Article updated and topic adjusted.' });
 };

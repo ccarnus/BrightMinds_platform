@@ -70,8 +70,10 @@ paths:
       summary: Create a cast
       description: |
         Multipart upload of the video plus a `cast` form field holding a JSON-encoded
-        `CastCreate` object. Duration is read from the video; transcription, image,
-        evaluation and (if no topic is given) topic generation run in a background queue.
+        `CastCreate` object. Duration is read from the video. The image is never generated: it
+        is a frame of the video, at `thumbnailTime` (the moment the author chose) or picked
+        automatically (most representative frame after the intro). Transcription, evaluation
+        and (if no topic is given) topic generation run in a background queue.
       security:
         - bearerAuth: []
       requestBody:
@@ -84,7 +86,7 @@ paths:
                 cast:
                   type: string
                   description: JSON-encoded `CastCreate` object.
-                  example: '{"title":"My cast","brightmindid":"665f1c2e9b1e8a0012345678","university":"MIT","category":"Research","visibility":"public","department":"ComputerScience"}'
+                  example: '{"title":"My cast","brightmindid":"665f1c2e9b1e8a0012345678","university":"MIT","category":"Research","visibility":"public","department":"ComputerScience","thumbnailTime":12.5}'
                 video:
                   type: string
                   format: binary
@@ -99,7 +101,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreatedResponse"
+                allOf:
+                  - $ref: "#/components/schemas/CreatedResponse"
+                  - type: object
+                    properties:
+                      castimageurl:
+                        type: string
+                        nullable: true
+                        description: The video thumbnail; null if no frame could be read.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -270,8 +279,9 @@ paths:
       summary: Update cast (partial)
       description: |
         Partial update. Only the fields present in the `cast` JSON field are changed.
-        An optional new `video` replaces the previous one (its duration is re-read and
-        the old file is deleted).
+        An optional new `video` replaces the previous one (its duration is re-read, a new
+        thumbnail is taken and the old files are deleted). `thumbnailTime` alone takes a new
+        thumbnail from the current video. The image cannot be set directly.
       security:
         - bearerAuth: []
       parameters:
@@ -311,6 +321,12 @@ paths:
           $ref: "#/components/responses/Conflict"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          description: "`thumbnailTime` given but no frame of the video could be read (previous image kept)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       tags: [Cast]
       summary: Delete cast
@@ -386,28 +402,54 @@ paths:
       tags: [Article]
       summary: Create an article
       description: |
-        The article is saved immediately. Its evaluation question, image and (if not given)
-        department and topic are generated with OpenAI in a background queue, retried
-        automatically (see `processing` on the article).
+        Multipart upload of the cover image (required, never generated) plus an `article` form
+        field holding a JSON-encoded `ArticleCreate` object (plain form fields are accepted
+        too). The image is re-encoded as JPEG (max 1600 px, metadata removed). The article is
+        saved immediately; its evaluation question and (if not given) department and topic are
+        generated with OpenAI in a background queue, retried automatically (see `processing`).
       security:
         - bearerAuth: []
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
-              $ref: "#/components/schemas/ArticleCreate"
+              type: object
+              properties:
+                article:
+                  type: string
+                  description: JSON-encoded `ArticleCreate` object.
+                  example: '{"title":"My article","description":"...","brightmindid":"665f1c2e9b1e8a0012345678","university":"MIT","category":"Research","visibility":"public","department":"Chemistry","topic":"Organic Chemistry"}'
+                image:
+                  type: string
+                  format: binary
+                  description: Cover image (image/jpeg, image/png or image/webp, max 10 MB).
+              required: [article, image]
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
       responses:
         "201":
           description: Article created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreatedResponse"
+                allOf:
+                  - $ref: "#/components/schemas/CreatedResponse"
+                  - type: object
+                    properties:
+                      articleimageurl:
+                        type: string
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Missing or unreadable cover image, unsupported image type, or invalid article
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     get:
       tags: [Article]
       summary: List all articles
@@ -519,7 +561,10 @@ paths:
     put:
       tags: [Article]
       summary: Update article (partial)
-      description: Partial update. Only the fields present in the body are changed.
+      description: |
+        Partial update. Only the fields present are changed. Send JSON, or multipart with an
+        optional new cover `image` (replaces and deletes the previous one) and an `article` JSON
+        field. The cover cannot be set by URL.
       security:
         - bearerAuth: []
       parameters:
@@ -530,6 +575,20 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ArticleUpdate"
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                article:
+                  type: string
+                  description: JSON-encoded `ArticleUpdate` object (fields to change).
+                image:
+                  type: string
+                  format: binary
+                  description: Optional new cover (image/jpeg, image/png or image/webp, max 10 MB).
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/webp
       responses:
         "201":
           description: Article updated
@@ -543,6 +602,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
     delete:
       tags: [Article]
       summary: Delete article
@@ -2648,6 +2709,9 @@ components:
           type: string
         castimageurl:
           type: string
+          description: >-
+            A frame of the video (`thumb_*.jpg`), chosen by the author or picked automatically.
+            Absent when no frame could be read.
         university:
           type: string
         category:
@@ -2674,7 +2738,8 @@ components:
     Processing:
       type: object
       description: |
-        Background AI processing (transcript, subtitles, evaluation, department, topic, image).
+        Background AI processing (transcript, subtitles, evaluation, department, topic; images
+        are never generated).
         Failed steps are retried with backoff, then once a day; `failed` means the item itself
         could not be processed after several days and needs attention.
       properties:
@@ -2714,6 +2779,12 @@ components:
         topic:
           type: string
           description: Optional; when omitted the topic (and department) are generated in the background.
+        thumbnailTime:
+          type: number
+          minimum: 0
+          description: >-
+            Moment of the video (seconds) used as the cast's image. Omitted: the most
+            representative frame after the intro is picked automatically.
         dateadded:
           type: string
           format: date-time
@@ -2737,8 +2808,12 @@ components:
           type: string
         link:
           type: string
-        castimageurl:
-          type: string
+        thumbnailTime:
+          type: number
+          minimum: 0
+          description: >-
+            New moment of the video (seconds) for the image. With a new video and no
+            `thumbnailTime`, the thumbnail is picked automatically.
         department:
           $ref: "#/components/schemas/Department"
         topic:
@@ -2761,7 +2836,7 @@ components:
           type: string
         articleimageurl:
           type: string
-          description: Generated in the background; absent until then.
+          description: The cover uploaded by the author (JPEG).
         university:
           type: string
         category:
@@ -2785,6 +2860,7 @@ components:
           $ref: "#/components/schemas/Processing"
     ArticleCreate:
       type: object
+      description: Content of the `article` multipart field for `POST /article` (with the `image` file).
       properties:
         title:
           type: string

@@ -1,4 +1,4 @@
-// Background AI processing of new articles (question, department, topic, image).
+// Background AI processing of new articles (question, department, topic).
 const { createQueue } = require('./create_queue');
 const { runAIJob } = require('../services/ai_pipeline');
 

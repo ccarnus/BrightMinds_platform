@@ -20,9 +20,7 @@ jest.mock('openai', () => {
   return OpenAI;
 });
 
-const fs = require('fs');
 const axios = require('axios');
-const sharp = require('sharp');
 const OpenAI = require('openai');
 const config = require('../../config');
 const Article = require('../../models/article_model');
@@ -36,7 +34,6 @@ const { resetAlertThrottle } = require('../../services/openai_alerts');
 const { enqueueRetries } = require('../../services/ai_retry');
 const { castQueue, processCastJob } = require('../../queues/cast_queue');
 const { processArticleJob } = require('../../queues/article_queue');
-const { mediaPathFromUrl } = require('../../services/media');
 const { useTestDatabase } = require('../helpers/db');
 const {
   MEDIA_DIRS,
@@ -54,7 +51,6 @@ const ANALYSIS = {
   correct_answer: 'It starves bacteria of manganese',
   distractors: ['It raises body temperature', 'It feeds immune cells', 'It dissolves cell walls'],
   department: 'Chemistry',
-  image_brief: 'A petri dish with metallic particles.',
 };
 const chatReply = (object) => ({
   choices: [{ message: { content: JSON.stringify(object) }, finish_reason: 'stop' }],
@@ -68,16 +64,6 @@ const job = (data, attemptsMade = 0) => ({
   opts: { attempts: 4 },
   attemptsMade,
   discard: jest.fn(),
-});
-
-let jpegBase64;
-
-beforeAll(async () => {
-  jpegBase64 = (
-    await sharp({ create: { width: 30, height: 20, channels: 3, background: '#888' } })
-      .jpeg()
-      .toBuffer()
-  ).toString('base64');
 });
 
 beforeEach(() => {
@@ -108,7 +94,8 @@ beforeEach(() => {
         ? chatReply({ topic_id: 'T11' })
         : chatReply(ANALYSIS)
     );
-  client.images.generate.mockReset().mockResolvedValue({ data: [{ b64_json: jpegBase64 }] });
+  // Kept on the fake client only to prove that no image is ever generated.
+  client.images.generate.mockReset();
 });
 
 afterEach(() => {
@@ -127,7 +114,7 @@ const pendingArticle = () =>
   });
 
 describe('article pipeline', () => {
-  test('generates question, department, topic and image', async () => {
+  test('generates question, department and topic, but never an image', async () => {
     const article = await pendingArticle();
 
     await processArticleJob(job({ articleId: article._id.toString() }));
@@ -141,9 +128,8 @@ describe('article pipeline', () => {
     expect(updated.department).toBe('Chemistry');
     expect(updated.topic).toBe('Metal Ions in Biology');
     expect(updated.processing.status).toBe('done');
-    expect(fs.existsSync(mediaPathFromUrl(updated.articleimageurl, MEDIA_DIRS.articleImages))).toBe(
-      true
-    );
+    expect(updated.articleimageurl).toBeUndefined();
+    expect(client.images.generate).not.toHaveBeenCalled();
     const topic = await Topic.findOne({
       name: 'Metal Ions in Biology',
       departmentName: 'Chemistry',
@@ -158,7 +144,7 @@ describe('article pipeline', () => {
       response_format: { type: 'json_schema', json_schema: { strict: true } },
     });
     expect(analysisCall.messages[1].content).toContain(article.title);
-    expect(client.images.generate.mock.calls[0][0].prompt).toContain(ANALYSIS.image_brief);
+    expect(analysisCall.response_format.json_schema.schema.required).not.toContain('image_brief');
   });
 
   test('a bad API key alerts once, pauses OpenAI calls and leaves the item pending', async () => {
@@ -210,7 +196,10 @@ describe('article pipeline', () => {
   });
 
   test('keeps partial progress and gives up after repeated content errors', async () => {
-    client.images.generate.mockRejectedValue(apiError(400, 'moderation_blocked'));
+    client.chat.completions.create.mockImplementation(async ({ response_format: format }) => {
+      if (format.json_schema.name === 'topic_choice') throw apiError(400, 'moderation_blocked');
+      return chatReply(ANALYSIS);
+    });
     const article = await pendingArticle();
     const id = article._id.toString();
 
@@ -218,8 +207,9 @@ describe('article pipeline', () => {
       kind: 'content',
     });
     let stored = await Article.findById(id);
-    expect(stored.evaluation.question).toBe(ANALYSIS.question); // saved before the image step
-    expect(stored.topic).toBe('Metal Ions in Biology');
+    expect(stored.evaluation.question).toBe(ANALYSIS.question); // saved before the topic step
+    expect(stored.department).toBe('Chemistry');
+    expect(stored.topic).toBe('Pending Topic');
     expect(stored.processing).toMatchObject({ status: 'pending', attempts: 1 });
 
     await expect(processArticleJob(job({ articleId: id }))).rejects.toThrow();
@@ -230,17 +220,24 @@ describe('article pipeline', () => {
   });
 
   test('a retry only runs the missing steps', async () => {
-    const article = await createArticle({ articleimageurl: undefined }); // has topic & department
-    article.evaluation = { question: 'Existing?', responses: ['a', 'b'], correct: 'a' };
-    await article.save();
+    const article = await createArticle(); // has topic & department, no question yet
 
     await processArticleJob(job({ articleId: article._id.toString() }));
 
     const updated = await Article.findById(article._id);
-    expect(updated.evaluation.question).toBe('Existing?');
-    expect(updated.articleimageurl).toBeTruthy();
+    expect(updated.evaluation.question).toBe(ANALYSIS.question);
     expect(axios.get).not.toHaveBeenCalled(); // topic already set: no OpenAlex/topic call
-    expect(client.chat.completions.create).toHaveBeenCalledTimes(1); // image brief only
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1); // the question only
+
+    // Nothing left to do: no OpenAI call at all (a missing image is not an AI output).
+    client.chat.completions.create.mockClear();
+    const complete = await createArticle({
+      articleimageurl: undefined,
+      evaluation: { question: 'Existing?', responses: ['a', 'b'], correct: 'a' },
+    });
+    await processArticleJob(job({ articleId: complete._id.toString() }));
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+    expect((await Article.findById(complete._id)).processing.status).toBe('done');
   });
 });
 
@@ -261,7 +258,8 @@ describe('cast pipeline', () => {
     expect(updated.evaluation.question).toBe(ANALYSIS.question);
     expect(updated.department).toBe('PhysicsandAstronomy'); // set by the author: kept
     expect(updated.topic).toBe('Metal Ions in Biology');
-    expect(updated.castimageurl).toBeTruthy();
+    expect(updated.castimageurl).toBeUndefined(); // the thumbnail comes from the video, at upload
+    expect(client.images.generate).not.toHaveBeenCalled();
     expect(updated.processing.status).toBe('done');
   });
 
@@ -276,8 +274,8 @@ describe('cast pipeline', () => {
 });
 
 describe('daily retry', () => {
+  // A cast without an image is complete: images are not AI outputs.
   const complete = {
-    castimageurl: 'http://api.test/backend/media/cast_images/x.jpg',
     evaluation: { question: 'Q?', responses: ['a', 'b'], correct: 'a' },
   };
 

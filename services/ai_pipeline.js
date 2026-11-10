@@ -1,21 +1,21 @@
 // Generative-AI processing of casts and articles, run by the cast/article queues.
 // Steps only run when their output is missing and are saved as soon as they succeed, so a job can
 // be retried (by Bull, the daily retry or `node scripts/ai.js retry`) and resumes where it stopped:
-//   1. transcript + subtitles (casts)   2. question, department, image brief   3. topic   4. image
+//   1. transcript + subtitles (casts)   2. question, department   3. topic
+// Images are never generated: casts show a frame of their video (services/thumbnail.js), articles
+// the cover uploaded by their author.
 const fs = require('fs');
 const config = require('../config');
 const Article = require('../models/article_model');
 const Cast = require('../models/cast_model');
 const { analyzeContent } = require('./analyze_content');
 const { chooseTopic } = require('./generate_topic');
-const { generateImage } = require('./generate_image');
 const { AIError, classifyError } = require('./openai');
 const { alertOpenAIProblem } = require('./openai_alerts');
 const { PENDING_DEPARTMENT, PENDING_TOPIC, createTopicIfNotExist } = require('./topics');
 const transcribeVideo = require('./transcription');
 const {
   MEDIA_DIRS,
-  deleteFile,
   ensureMediaDir,
   mediaFilePath,
   mediaPathFromUrl,
@@ -23,18 +23,8 @@ const {
 } = require('./media');
 
 const CONTENT_TYPES = {
-  cast: {
-    Model: Cast,
-    idField: 'castId',
-    imageField: 'castimageurl',
-    imageDir: MEDIA_DIRS.castImages,
-  },
-  article: {
-    Model: Article,
-    idField: 'articleId',
-    imageField: 'articleimageurl',
-    imageDir: MEDIA_DIRS.articleImages,
-  },
+  cast: { Model: Cast, idField: 'castId' },
+  article: { Model: Article, idField: 'articleId' },
 };
 
 const isEmpty = { $in: [null, ''] };
@@ -44,7 +34,6 @@ const missingOutputsFilter = (type) => ({
   $or: [
     ...(type === 'cast' ? [{ description: isEmpty }] : []),
     { 'evaluation.question': isEmpty },
-    { [CONTENT_TYPES[type].imageField]: isEmpty },
     { department: PENDING_DEPARTMENT },
     { topic: PENDING_TOPIC },
   ],
@@ -75,7 +64,7 @@ const transcribeCast = async (cast) => {
  * @throws {AIError|Error}
  */
 const processContent = async (type, id) => {
-  const { Model, imageField, imageDir } = CONTENT_TYPES[type];
+  const { Model } = CONTENT_TYPES[type];
   const save = (update) => Model.findByIdAndUpdate(id, update, { new: true });
 
   let content = await Model.findById(id);
@@ -88,15 +77,12 @@ const processContent = async (type, id) => {
 
   const needsDepartment = !content.department || content.department === PENDING_DEPARTMENT;
   const needsEvaluation = !content.evaluation?.question;
-  const needsImage = !content[imageField];
-  let imageBrief = content.title;
-  if (needsDepartment || needsEvaluation || needsImage) {
+  if (needsDepartment || needsEvaluation) {
     const analysis = await analyzeContent({
       title: content.title,
       description: content.description,
       contentType: type,
     });
-    imageBrief = analysis.imageBrief;
     const update = {};
     if (needsEvaluation) update.evaluation = analysis.evaluation;
     if (needsDepartment) update.department = analysis.department;
@@ -136,14 +122,6 @@ const processContent = async (type, id) => {
         contentId: content._id,
         contentType: type,
       });
-    }
-  }
-
-  if (needsImage) {
-    const filename = await generateImage(imageBrief, { dir: imageDir, prefix: type });
-    if (!(await save({ [imageField]: mediaUrl(imageDir, filename) }))) {
-      await deleteFile(mediaFilePath(imageDir, filename));
-      return false;
     }
   }
   return true;

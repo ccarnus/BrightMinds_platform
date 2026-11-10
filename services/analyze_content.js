@@ -1,5 +1,5 @@
-// One structured-output call per cast/article producing the multiple-choice question, the
-// department (used when the author didn't pick one) and a short visual brief for the illustration.
+// One structured-output call per cast/article producing the multiple-choice question and the
+// department (used when the author didn't pick one).
 const config = require('../config');
 const { departmentNames } = require('../lists/departments');
 const { AIError, callOpenAI } = require('./openai');
@@ -20,20 +20,17 @@ From the content provided, produce:
 
 2. department: the academic field that best fits the research, from the allowed values.
 
-3. image_brief: one or two sentences describing a simple, concrete scene that conveys the subject visually (objects, setting, composition). It will be illustrated without any text, so do not rely on words, labels, charts, logos or identifiable people.
-
 Talk transcripts come from automatic speech recognition and may contain misheard words: rely on the intended meaning and spell terms correctly.`;
 
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['question', 'correct_answer', 'distractors', 'department', 'image_brief'],
+  required: ['question', 'correct_answer', 'distractors', 'department'],
   properties: {
     question: { type: 'string' },
     correct_answer: { type: 'string' },
     distractors: { type: 'array', items: { type: 'string' } },
     department: { type: 'string', enum: departmentNames },
-    image_brief: { type: 'string' },
   },
 };
 
@@ -82,12 +79,11 @@ const toEvaluation = (output) => {
 const MOCK_ANALYSIS = () => ({
   evaluation: { question: 'Mock question?', responses: ['A', 'B', 'C', 'D'], correct: 'A' },
   department: departmentNames[0],
-  imageBrief: 'Mock image brief.',
 });
 
 /**
  * @param {{ title: string, description: string, contentType: 'cast'|'article' }} content
- * @returns {Promise<{ evaluation: object, department: string, imageBrief: string }>}
+ * @returns {Promise<{ evaluation: object, department: string }>}
  * @throws {AIError}
  */
 const analyzeContent = async (content) => {
@@ -123,11 +119,7 @@ const analyzeContent = async (content) => {
   const evaluation = toEvaluation(output);
   if (!evaluation) fail(`invalid question: ${message.content.slice(0, 300)}`);
   if (!departmentNames.includes(output.department)) fail(`unknown department ${output.department}`);
-  return {
-    evaluation,
-    department: output.department,
-    imageBrief: String(output.image_brief || '').trim() || String(content.title),
-  };
+  return { evaluation, department: output.department };
 };
 
 module.exports = { analyzeContent, toEvaluation, buildUserMessage, SYSTEM_PROMPT };

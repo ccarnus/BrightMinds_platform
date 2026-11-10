@@ -2,7 +2,8 @@
 
 REST API for the BrightMinds app: casts (videos), articles, users, universities, virtual labs and
 research topics. New content is enriched in the background with OpenAI (transcription, quiz
-question, illustration, topic detection).
+question, topic detection). Images are never generated: cast images are frames of their video,
+article covers are uploaded by their authors.
 
 **Stack:** Node 22 · Express 5 · MongoDB (Mongoose 8) · Redis (Bull queues) · Jest · Docker Compose
 
@@ -36,9 +37,9 @@ With docker compose, `MONGODB_URI` is set by the stack (bundled MongoDB); use
 ## AI processing
 
 New casts and articles are enriched in the background (`services/ai_pipeline.js`):
-transcript + subtitles (casts), quiz question + department + image brief (one structured call),
-OpenAlex topic, illustration. Each step is saved as soon as it succeeds and skipped when its
-output exists, so retries resume where they stopped.
+transcript + subtitles (casts), quiz question + department (one structured call), OpenAlex
+topic. Each step is saved as soon as it succeeds and skipped when its output exists, so retries
+resume where they stopped. **No image is ever generated** (see "Images" below).
 
 - **Failures:** OpenAI unreachable / rate-limited → retried 4 times with backoff. Bad key, no
   credit or unknown model → alert email (`OPENAI_ALERT_EMAIL_TO`) and OpenAI calls paused 1 h.
@@ -49,9 +50,19 @@ output exists, so retries resume where they stopped.
   `check` (key, models, parameters) · `status` (unprocessed items and last error) ·
   `retry` (queue now) · `retry --failed` (also items that gave up).
 - **Models** (env overrides): `OPENAI_CHAT_MODEL` (`gpt-6.1-terra`, with
-  `OPENAI_REASONING_EFFORT=low`), `OPENAI_IMAGE_MODEL` (`gpt-image-2.6-flare`,
-  `OPENAI_IMAGE_QUALITY=medium`), `OPENAI_TRANSCRIPTION_MODEL` (`whisper-1`: the only model
+  `OPENAI_REASONING_EFFORT=low`), `OPENAI_TRANSCRIPTION_MODEL` (`whisper-1`: the only model
   with timestamps, so the only one producing subtitles; other models give text only).
+
+## Images
+
+- **Casts:** the image is a frame of the video (`services/thumbnail.js`, ffmpeg), saved as a
+  980×560 JPEG `cast_images/thumb_*.jpg` at upload. The app sends the moment the author picked
+  (`thumbnailTime`, seconds); without it (API uploads) the most representative frame after the
+  intro is chosen automatically. `PUT /cast/:id` with `thumbnailTime` re-picks it.
+- **Articles:** the author uploads the cover (`POST /article` multipart `image`, required;
+  JPEG/PNG/WebP). It is re-encoded as JPEG (max 1600 px, EXIF/GPS metadata removed).
+- At startup, casts whose image is not a video thumbnail (former AI illustrations) get an
+  automatic thumbnail in the background (`services/thumbnail_backfill.js`, idempotent).
 
 ## API
 

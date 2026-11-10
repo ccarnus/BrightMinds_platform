@@ -1,12 +1,16 @@
+const fs = require('fs');
 const request = require('supertest');
+const sharp = require('sharp');
 const app = require('../../app');
 const Article = require('../../models/article_model');
 const Topic = require('../../models/topic_model');
 const User = require('../../models/user_model');
 const { articleQueue } = require('../../queues/article_queue');
+const { mediaDirPath } = require('../../services/media');
 const { useTestDatabase } = require('../helpers/db');
 const {
   MEDIA_DIRS,
+  PNG_BYTES,
   createUser,
   createArticle,
   createMediaFile,
@@ -31,22 +35,46 @@ const payload = (author, overrides = {}) => ({
   ...overrides,
 });
 
+const COVER = { filename: 'cover.png', contentType: 'image/png' };
+
+/** Multipart article: `article` JSON field + `image` cover (pass `image: null` to omit it). */
+const postArticle = (data, { image = PNG_BYTES, file = COVER } = {}) => {
+  const req = request(app).post('/article').field('article', JSON.stringify(data));
+  return image ? req.attach('image', image, file) : req;
+};
+
+const articleImageFiles = () =>
+  fs.existsSync(mediaDirPath(MEDIA_DIRS.articleImages))
+    ? fs.readdirSync(mediaDirPath(MEDIA_DIRS.articleImages))
+    : [];
+
 describe('POST /article', () => {
-  test('creates the article, its topic and the author publication, then queues AI work', async () => {
+  test('creates the article with its uploaded cover, topic and author publication, then queues AI work', async () => {
     const author = await createUser();
-    const res = await request(app)
-      .post('/article')
-      .send(payload(author, { rating: { value: 10, count: 999 } }))
-      .expect(201);
+    const res = await postArticle(payload(author, { rating: { value: 10, count: 999 } })).expect(
+      201
+    );
 
     const article = await Article.findById(res.body.id);
     expect(article.duration).toBe(2);
-    // Question and image are generated in the background, so OpenAI outages never block posting.
+    // The question is generated in the background, so OpenAI outages never block posting.
     expect(article.evaluation.question).toBeUndefined();
-    expect(article.articleimageurl).toBeUndefined();
     expect(article.processing.status).toBe('pending');
     // Mass assignment of protected fields is ignored.
     expect(article.rating.count).toBe(1);
+
+    // The cover is re-encoded as JPEG; the original upload is not kept.
+    expect(article.articleimageurl).toMatch(
+      /^http:\/\/api\.test\/backend\/media\/article_images\/article_.*\.jpg$/
+    );
+    expect(res.body.articleimageurl).toBe(article.articleimageurl);
+    const filename = article.articleimageurl.split('/').pop();
+    expect(mediaFileExists(MEDIA_DIRS.articleImages, filename)).toBe(true);
+    const metadata = await sharp(
+      `${mediaDirPath(MEDIA_DIRS.articleImages)}/${filename}`
+    ).metadata();
+    expect(metadata.format).toBe('jpeg');
+    expect(articleImageFiles().some((name) => name.startsWith('cover_'))).toBe(false);
 
     const topic = await Topic.findOne({ name: 'Organic Chemistry', departmentName: 'Chemistry' });
     expect(topic.articleIDs.map(String)).toEqual([article._id.toString()]);
@@ -58,15 +86,44 @@ describe('POST /article', () => {
 
   test('without topic/department, uses placeholders until the AI job fills them', async () => {
     const author = await createUser();
-    const res = await request(app)
-      .post('/article')
-      .send(payload(author, { topic: '', department: '' }))
-      .expect(201);
+    const res = await postArticle(payload(author, { topic: '', department: '' })).expect(201);
     const article = await Article.findById(res.body.id);
     expect(article.topic).toBe('Pending Topic');
     expect(article.department).toBe('Pending Department');
     expect(await Topic.countDocuments()).toBe(0);
     expect(articleQueue.jobs).toEqual([{ articleId: res.body.id }]);
+  });
+
+  test('requires an uploaded cover image', async () => {
+    const author = await createUser();
+    const missing = await postArticle(payload(author), { image: null }).expect(400);
+    expect(missing.body.message).toMatch(/cover image is required/);
+    // The former JSON API (no image) is rejected too.
+    await request(app).post('/article').send(payload(author)).expect(400);
+    expect(await Article.countDocuments()).toBe(0);
+  });
+
+  test('rejects unsupported and unreadable images without keeping any file', async () => {
+    const author = await createUser();
+    const filesBefore = articleImageFiles();
+    await postArticle(payload(author), {
+      file: { filename: 'photo.heic', contentType: 'image/heic' },
+    }).expect(400);
+    const unreadable = await postArticle(payload(author), {
+      image: Buffer.from('not an image'),
+    }).expect(400);
+    expect(unreadable.body.message).toMatch(/could not be read/);
+    expect(await Article.countDocuments()).toBe(0);
+    expect(articleImageFiles()).toEqual(filesBefore);
+  });
+
+  test('accepts plain multipart fields as well as the `article` JSON field', async () => {
+    const author = await createUser();
+    const fields = payload(author);
+    const req = request(app).post('/article');
+    Object.entries(fields).forEach(([key, value]) => req.field(key, value));
+    const res = await req.attach('image', PNG_BYTES, COVER).expect(201);
+    expect((await Article.findById(res.body.id)).title).toBe('Benzene rings');
   });
 
   test.each([
@@ -76,8 +133,10 @@ describe('POST /article', () => {
     ['missing title', { title: undefined }],
   ])('rejects %s with 400', async (_label, override) => {
     const author = await createUser();
-    await request(app).post('/article').send(payload(author, override)).expect(400);
+    const filesBefore = articleImageFiles();
+    await postArticle(payload(author, override)).expect(400);
     expect(await Article.countDocuments()).toBe(0);
+    expect(articleImageFiles()).toEqual(filesBefore);
   });
 });
 
@@ -122,7 +181,7 @@ describe('reading articles', () => {
 describe('PUT /article/:id', () => {
   test('moving to another topic updates both topics', async () => {
     const author = await createUser();
-    const { body } = await request(app).post('/article').send(payload(author)).expect(201);
+    const { body } = await postArticle(payload(author)).expect(201);
 
     await request(app)
       .put(`/article/${body.id}`)
@@ -150,6 +209,32 @@ describe('PUT /article/:id', () => {
     const article = await createArticle();
     await request(app).put(`/article/${article._id}`).send({ department: 'Alchemy' }).expect(400);
     await request(app).put('/article/507f1f77bcf86cd799439011').send({ title: 'x' }).expect(404);
+  });
+
+  test('a new uploaded cover replaces the previous one', async () => {
+    const before = createMediaFile(MEDIA_DIRS.articleImages, 'previous.jpg');
+    const article = await createArticle({ articleimageurl: before });
+
+    await request(app)
+      .put(`/article/${article._id}`)
+      .field('article', JSON.stringify({ title: 'With a new cover' }))
+      .attach('image', PNG_BYTES, COVER)
+      .expect(201);
+
+    const updated = await Article.findById(article._id);
+    expect(updated.title).toBe('With a new cover');
+    expect(updated.articleimageurl).toMatch(/\/article_images\/article_.*\.jpg$/);
+    expect(mediaFileExists(MEDIA_DIRS.articleImages, 'previous.jpg')).toBe(false);
+  });
+
+  test('the cover cannot be replaced by a URL', async () => {
+    const before = 'http://api.test/backend/media/article_images/kept.jpg';
+    const article = await createArticle({ articleimageurl: before });
+    await request(app)
+      .put(`/article/${article._id}`)
+      .send({ articleimageurl: 'https://example.com/generated.png' })
+      .expect(201);
+    expect((await Article.findById(article._id)).articleimageurl).toBe(before);
   });
 });
 
