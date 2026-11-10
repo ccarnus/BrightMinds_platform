@@ -1051,6 +1051,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /user/{id}/quiz:
+    post:
+      tags: [User]
+      summary: Submit quiz answers and earn rewards
+      description: >-
+        Grades the answers against the stored `evaluation.correct` of each cast/article and awards XP
+        (+10 per correct answer, +2 per wrong answer, combo bonus +5 per consecutive correct answer up to +20,
+        +20 for a perfect quiz of 2+ questions, daily streak bonus +5 per streak day up to +35 on the first
+        quiz of the day), updates the daily streak, unlocks badges and adds the correct answers to
+        `tracking.progress`. Only questions still pending in the user's evaluation list are graded; correct
+        ones are marked as answered. Answers for other content are ignored, so a replay earns nothing.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answers:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  description: In the order they were answered (the order drives the combo bonus).
+                  items:
+                    type: object
+                    properties:
+                      contentId:
+                        type: string
+                      response:
+                        type: string
+                        description: The chosen answer, one of the evaluation `responses`.
+                    required: [contentId, response]
+                utcOffsetMinutes:
+                  type: integer
+                  minimum: -840
+                  maximum: 840
+                  description: Minutes east of UTC (e.g. 120 for UTC+2), so the streak follows the user's day.
+                quizId:
+                  type: string
+                  pattern: "^[A-Za-z0-9_-]{8,64}$"
+                  description: >-
+                    Client-generated id of this quiz attempt. Resending the last graded quiz id (retry after a
+                    lost response) earns nothing and answers `duplicate: true`.
+              required: [answers]
+      responses:
+        "200":
+          description: Graded quiz and updated rewards
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuizResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The same quiz was submitted concurrently
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /user/{id}/rewards:
+    get:
+      tags: [User]
+      summary: Get the user's XP, level, streak and badges
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+        - name: utcOffsetMinutes
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: -840
+            maximum: 840
+          description: Minutes east of UTC, so the streak follows the user's day.
+      responses:
+        "200":
+          description: Rewards
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Rewards"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /user/bookmarks/{id}:
     get:
       tags: [User]
@@ -2443,6 +2543,9 @@ components:
           type: array
           items:
             type: string
+        rewards:
+          type: object
+          description: Raw reward counters; use `GET /user/{id}/rewards` for levels, streak and badges.
     UserSignup:
       type: object
       description: Content of the `user` multipart field for `POST /user/signup`.
@@ -2576,6 +2679,7 @@ components:
           type: string
         progress:
           type: number
+          description: Questions answered correctly toward the learning path target (incremented by quizzes).
         target:
           type: number
         history:
@@ -2587,6 +2691,153 @@ components:
                 type: string
               count:
                 type: number
+    RewardBadge:
+      type: object
+      properties:
+        key:
+          type: string
+          enum:
+            [first_quiz, perfect_quiz, combo_5, streak_3, streak_7, correct_10, correct_50, quizzes_10, level_5, objective_reached]
+        title:
+          type: string
+        description:
+          type: string
+        earned:
+          type: boolean
+        earnedAt:
+          type: string
+          format: date-time
+          nullable: true
+    Rewards:
+      type: object
+      description: Level 1 starts at 0 XP; reaching level n requires 50·n·(n−1) XP in total.
+      properties:
+        xp:
+          type: number
+        level:
+          type: number
+        levelTitle:
+          type: string
+        levelXp:
+          type: number
+          description: XP earned since the start of the current level.
+        levelSpan:
+          type: number
+          description: XP between the current and the next level.
+        nextLevelXp:
+          type: number
+        progress:
+          type: number
+          description: 0–1 progress toward the next level.
+        streak:
+          type: object
+          properties:
+            current:
+              type: number
+              description: Consecutive days with a quiz; 0 once a day was skipped.
+            best:
+              type: number
+            completedToday:
+              type: boolean
+            lastQuizDay:
+              type: string
+              nullable: true
+              example: "2026-11-10"
+        stats:
+          type: object
+          properties:
+            quizzesCompleted:
+              type: number
+            perfectQuizzes:
+              type: number
+            correctAnswers:
+              type: number
+            answeredQuestions:
+              type: number
+            bestCombo:
+              type: number
+        badges:
+          type: array
+          description: The full badge catalog with the user's progress.
+          items:
+            $ref: "#/components/schemas/RewardBadge"
+    QuizResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              contentId:
+                type: string
+              correct:
+                type: boolean
+              correctAnswer:
+                type: string
+              xp:
+                type: number
+        summary:
+          type: object
+          properties:
+            total:
+              type: number
+            correct:
+              type: number
+            bestCombo:
+              type: number
+            perfect:
+              type: boolean
+        xpEarned:
+          type: number
+        breakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                enum: [answers, effort, combo, perfect, streak]
+              label:
+                type: string
+              xp:
+                type: number
+        previous:
+          type: object
+          description: XP and level before this quiz (to animate the progress).
+          properties:
+            xp:
+              type: number
+            level:
+              type: number
+            levelTitle:
+              type: string
+            levelXp:
+              type: number
+            levelSpan:
+              type: number
+            nextLevelXp:
+              type: number
+            progress:
+              type: number
+        leveledUp:
+          type: boolean
+        duplicate:
+          type: boolean
+          description: True when the `quizId` was already graded (nothing was awarded again).
+        newBadges:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              title:
+                type: string
+              description:
+                type: string
+        rewards:
+          $ref: "#/components/schemas/Rewards"
     University:
       type: object
       properties:

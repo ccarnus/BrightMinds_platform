@@ -25,7 +25,7 @@ npm run check          # lint + format check + tests — run before declaring wo
 | `config/index.js`      | **Only** place that reads `process.env`                                                           |
 | `routes/`              | One router per resource; `routes/index.js` maps mount prefix → router                             |
 | `controllers/`         | Request handlers (thin: validate, call models/services, respond)                                  |
-| `services/`            | Business logic & integrations (OpenAI, mail, media files, topics, metrics)                        |
+| `services/`            | Business logic & integrations (OpenAI, mail, media files, topics, metrics, quiz rewards)          |
 | `queues/`              | Bull queues; both run `services/ai_pipeline.js` (daily retry: `services/ai_retry.js`)             |
 | `middleware/`          | `auth` (JWT), `upload` (multer), `error_handler`, `rate_limit`                                    |
 | `models/`              | Mongoose schemas                                                                                  |
@@ -52,6 +52,11 @@ npm run check          # lint + format check + tests — run before declaring wo
   Enforcement is controlled by `AUTH_REQUIRED` (currently off in production until the app sends tokens).
 - **Topics**: always go through `services/topics.js` (`createTopicIfNotExist`, `removeExistingTopic`,
   `moveContentTopic`). `Pending Topic` / `Pending Department` are placeholders until a queue job fills them.
+- **Quiz rewards**: `services/rewards.js` holds the pure rules (XP, levels, streak, badges);
+  `POST /user/:id/quiz` grades against the stored `evaluation.correct` and is the only writer of
+  `user.rewards` (never add it to `SELF_EDITABLE_FIELDS`). The app mirrors the XP/level rules in
+  `src/features/track/utils/rewards.js` for live previews — change both together. Badge icons live in the
+  app (`BADGE_STYLES`): add one there when adding a badge.
 - **Config**: new env var → `config/index.js` + `.env.example` (+ README if operators must set it).
 - **Units**: cast and article `duration` are in minutes.
 - **Style**: Prettier (single quotes, 100 cols) + ESLint. Short JSDoc on non-obvious functions; no noise comments.

@@ -59,6 +59,9 @@ output exists, so retries resume where they stopped.
 - Auth: `POST /user/login` returns a JWT; send it as `Authorization: Bearer <token>`.
   It is only **enforced** when `AUTH_REQUIRED=true`.
 - Errors: `{ "error": "...", "message": "..." }`.
+- Quiz rewards: `POST /user/:id/quiz` grades answers server-side and awards XP, levels, a daily streak and
+  badges (rules in `services/rewards.js`); `GET /user/:id/rewards` returns them. Both accept
+  `utcOffsetMinutes` so streaks follow the user's local day; a client `quizId` makes retries harmless.
 
 ## Project layout
 

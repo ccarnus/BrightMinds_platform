@@ -66,6 +66,30 @@ const userSchema = new mongoose.Schema({
       ref: 'Article',
     },
   ],
+  // Quiz gamification, written only by POST /user/:id/quiz (see services/rewards.js).
+  rewards: {
+    xp: { type: Number, default: 0 },
+    quizzesCompleted: { type: Number, default: 0 },
+    perfectQuizzes: { type: Number, default: 0 },
+    answeredQuestions: { type: Number, default: 0 },
+    correctAnswers: { type: Number, default: 0 },
+    bestCombo: { type: Number, default: 0 },
+    // Client-generated id of the last graded quiz: a resubmission (retry after a lost response) earns nothing.
+    lastQuizId: { type: String, required: false },
+    streak: {
+      current: { type: Number, default: 0 },
+      best: { type: Number, default: 0 },
+      // User's local day (YYYY-MM-DD) of the last quiz.
+      lastQuizDay: { type: String, required: false },
+    },
+    badges: [
+      {
+        _id: false,
+        key: { type: String, required: true },
+        earnedAt: { type: Date, default: Date.now },
+      },
+    ],
+  },
 });
 
 // Secrets must never leave the API, whatever the endpoint serializes.

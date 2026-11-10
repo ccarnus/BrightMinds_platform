@@ -26,6 +26,10 @@ router.post('/add/content/:id', self, userController.updateUserAddContentToList)
 router.post('/remove/content/:id', self, userController.updateUserRemoveContentFromList);
 router.post('/mark/content/as/answered/:id', self, userController.markContentAsAnswered);
 
+// Quiz & rewards
+router.post('/:id/quiz', self, userController.submitQuiz);
+router.get('/:id/rewards', self, userController.getUserRewards);
+
 // Bookmarks
 router.get('/bookmarks/:id', self, userController.getUserBookmarks);
 router.post('/add/bookmarks/:id', self, userController.addUserBookmark);

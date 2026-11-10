@@ -1,5 +1,6 @@
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const User = require('../models/user_model');
 const Cast = require('../models/cast_model');
 const Article = require('../models/article_model');
@@ -7,6 +8,7 @@ const { departmentNames } = require('../lists/departments');
 const isValidEmail = require('../services/email_validator');
 const { sendMail } = require('../services/mailer');
 const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
+const rewardsService = require('../services/rewards');
 const { signToken } = require('../middleware/auth');
 const {
   messagePage,
@@ -398,6 +400,153 @@ exports.markContentAsAnswered = async (req, res) => {
   evaluation.answered = true;
   await user.save();
   res.status(200).json({ message: 'Content marked as answered.' });
+};
+
+// ---------------------------------------------------------------- Quiz rewards
+
+const CONTENT_MODELS = { cast: Cast, article: Article };
+const EMPTY_QUIZ_SUMMARY = { total: 0, correct: 0, bestCombo: 0, perfect: false };
+const QUIZ_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+const quizDay = (utcOffsetMinutes) =>
+  rewardsService.localDay(rewardsService.normalizeUtcOffset(utcOffsetMinutes));
+
+/** Optional client-generated quiz id that makes a resubmission harmless. */
+const parseQuizId = (quizId) => {
+  if (quizId === undefined || quizId === null) return null;
+  if (typeof quizId !== 'string' || !QUIZ_ID_PATTERN.test(quizId)) {
+    throw badRequest('quizId must be 8 to 64 letters, digits, "-" or "_".');
+  }
+  return quizId;
+};
+
+/** Response of a quiz that earned nothing (nothing left to grade, or an already graded quiz id). */
+const emptyQuizResponse = (user, today, duplicate) => {
+  const xp = user.rewards.xp || 0;
+  return {
+    results: [],
+    summary: EMPTY_QUIZ_SUMMARY,
+    xpEarned: 0,
+    breakdown: [],
+    previous: { xp, ...rewardsService.levelInfo(xp) },
+    leveledUp: false,
+    newBadges: [],
+    duplicate,
+    rewards: rewardsService.serializeRewards(user, today),
+  };
+};
+
+/** Validates `answers` and keeps the first answer per content id, in order. */
+const parseQuizAnswers = (answers) => {
+  if (!Array.isArray(answers) || answers.length === 0) {
+    throw badRequest('answers must be a non-empty array.');
+  }
+  if (answers.length > rewardsService.MAX_QUIZ_ANSWERS) {
+    throw badRequest(`A quiz has at most ${rewardsService.MAX_QUIZ_ANSWERS} answers.`);
+  }
+  const seen = new Set();
+  return answers.reduce((unique, answer) => {
+    const contentId = String(answer?.contentId ?? '');
+    assertObjectId(contentId, 'contentId');
+    if (typeof answer.response !== 'string') throw badRequest('Each answer needs a response.');
+    if (!seen.has(contentId)) {
+      seen.add(contentId);
+      unique.push({ contentId, response: answer.response });
+    }
+    return unique;
+  }, []);
+};
+
+/** Loads the `evaluation` of evaluation-list items, keyed by content id. */
+const loadEvaluations = async (items) => {
+  const evaluations = new Map();
+  await Promise.all(
+    Object.entries(CONTENT_MODELS).map(async ([type, Model]) => {
+      const ids = items.filter((item) => item.type === type).map((item) => item.contentid);
+      if (ids.length === 0) return;
+      const docs = await Model.find({ _id: { $in: ids } }).select('evaluation');
+      docs.forEach((doc) => evaluations.set(String(doc._id), doc.evaluation));
+    })
+  );
+  return evaluations;
+};
+
+/**
+ * Grades a quiz against the stored correct answers and awards XP, streak and badges.
+ * Only questions still pending in the evaluation list count, so replays earn nothing;
+ * correct answers are marked as answered (wrong ones stay pending for a later quiz).
+ * Resending the last `quizId` earns nothing and answers `duplicate: true`.
+ */
+exports.submitQuiz = async (req, res) => {
+  const answers = parseQuizAnswers(req.body.answers);
+  const quizId = parseQuizId(req.body.quizId);
+  const today = quizDay(req.body.utcOffsetMinutes);
+  const user = await findUserOr404(req.params.id);
+
+  if (quizId && user.rewards.lastQuizId === quizId) {
+    return res.status(200).json(emptyQuizResponse(user, today, true));
+  }
+
+  const pending = new Map(
+    user.evaluation_list.filter((item) => !item.answered).map((item) => [item.contentid, item])
+  );
+  const eligible = answers.filter((answer) => pending.has(answer.contentId));
+  const evaluations = await loadEvaluations(
+    eligible.map((answer) => pending.get(answer.contentId))
+  );
+  const graded = eligible
+    .filter((answer) => evaluations.get(answer.contentId)?.correct)
+    .map((answer) => {
+      const correctAnswer = evaluations.get(answer.contentId).correct;
+      return {
+        contentId: answer.contentId,
+        correct: answer.response === correctAnswer,
+        correctAnswer,
+      };
+    });
+
+  if (graded.length === 0) {
+    return res.status(200).json(emptyQuizResponse(user, today, false));
+  }
+
+  const quiz = rewardsService.scoreQuiz(graded);
+  quiz.results
+    .filter((result) => result.correct)
+    .forEach((result) => {
+      pending.get(result.contentId).answered = true;
+    });
+  const outcome = rewardsService.applyQuiz(user, quiz, today);
+  if (quizId) user.rewards.lastQuizId = quizId;
+
+  // The version check rejects a concurrent submission of the same quiz (double tap, retry).
+  user.increment();
+  try {
+    await user.save();
+  } catch (error) {
+    if (error instanceof mongoose.Error.VersionError) {
+      throw new HttpError(409, 'This quiz was already submitted.');
+    }
+    throw error;
+  }
+
+  res.status(200).json({
+    results: quiz.results,
+    summary: {
+      total: quiz.total,
+      correct: quiz.correct,
+      bestCombo: quiz.bestCombo,
+      perfect: quiz.perfect,
+    },
+    ...outcome,
+    duplicate: false,
+    rewards: rewardsService.serializeRewards(user, today),
+  });
+};
+
+/** `?utcOffsetMinutes=` lets the streak follow the user's local day. */
+exports.getUserRewards = async (req, res) => {
+  const user = await findUserOr404(req.params.id, 'rewards');
+  res.status(200).json(rewardsService.serializeRewards(user, quizDay(req.query.utcOffsetMinutes)));
 };
 
 // ---------------------------------------------------------------- Bookmarks
