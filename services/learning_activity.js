@@ -17,7 +17,7 @@ const incrementFieldStat = async (userId, field, stat, amount = 1) => {
       $push: {
         'learning.stats.fields': {
           field,
-          contents: 0,
+          casts: 0,
           correctAnswers: 0,
           papers: 0,
           [stat]: amount,
@@ -58,10 +58,10 @@ const recordUserMilestones = async (userId, now = new Date()) => {
   return recorded;
 };
 
-/** A cast watched or an article read for the first time, in its department. */
-const recordContentConsumed = async (userId, field) => {
-  await User.updateOne({ _id: userId }, { $inc: { 'learning.stats.contents': 1 } });
-  await incrementFieldStat(userId, field, 'contents');
+/** A cast watched for the first time, in its department. */
+const recordCastWatched = async (userId, field) => {
+  await User.updateOne({ _id: userId }, { $inc: { 'learning.stats.casts': 1 } });
+  await incrementFieldStat(userId, field, 'casts');
   return recordUserMilestones(userId);
 };
 
@@ -82,6 +82,6 @@ const recordPaperOpened = async (userId, paperId, field) => {
 module.exports = {
   incrementFieldStat,
   recordUserMilestones,
-  recordContentConsumed,
+  recordCastWatched,
   recordPaperOpened,
 };

@@ -2,29 +2,25 @@ const request = require('supertest');
 const app = require('../../app');
 const User = require('../../models/user_model');
 const { useTestDatabase } = require('../helpers/db');
-const { createUser, createCast, createArticle } = require('../helpers/fixtures');
+const { createUser, createCast } = require('../helpers/fixtures');
 
 useTestDatabase();
 
 const MISSING_ID = '507f1f77bcf86cd799439011';
 const evaluation = (correct) => ({ question: 'Q?', responses: ['A', 'B', 'C'], correct });
 
-/** A user with three watched-but-unanswered questions (two casts and one article). */
+/** A user with three watched-but-unanswered questions (three casts). */
 const setupQuiz = async () => {
   const casts = await Promise.all([
     createCast({ evaluation: evaluation('A') }),
     createCast({ evaluation: evaluation('B') }),
+    createCast({ evaluation: evaluation('C') }),
   ]);
-  const article = await createArticle({ evaluation: evaluation('C') });
-  const items = [
-    { contentid: casts[0]._id.toString(), type: 'cast' },
-    { contentid: casts[1]._id.toString(), type: 'cast' },
-    { contentid: article._id.toString(), type: 'article' },
-  ];
+  const ids = casts.map((cast) => cast._id.toString());
   const user = await createUser({
-    evaluation_list: items.map((item) => ({ ...item, watched: true, answered: false })),
+    evaluation_list: ids.map((contentid) => ({ contentid, watched: true, answered: false })),
   });
-  return { user, ids: items.map((item) => item.contentid) };
+  return { user, ids };
 };
 
 describe('POST /user/:id/quiz', () => {

@@ -6,16 +6,17 @@ const {
   PENDING_TOPIC,
   createTopicIfNotExist,
   removeExistingTopic,
-  moveContentTopic,
+  moveCastTopic,
   isAssignedTopic,
 } = require('../services/topics');
 const {
+  CARD_PROJECTION,
   assertValidTitle,
   resolveDepartment,
   applyRating,
-  removeContentReferences,
+  removeCastReferences,
   addPublicationToAuthor,
-} = require('../services/content');
+} = require('../services/cast');
 const { castQueue } = require('../queues/cast_queue');
 const { enqueue } = require('../queues/create_queue');
 const {
@@ -121,11 +122,10 @@ exports.createCast = async (req, res) => {
     await createTopicIfNotExist({
       name: cast.topic,
       departmentName: department,
-      contentId: cast._id,
-      contentType: 'cast',
+      castId: cast._id,
     });
   }
-  await addPublicationToAuthor(cast.brightmindid, 'castPublications', cast._id);
+  await addPublicationToAuthor(cast.brightmindid, cast._id);
   enqueue(castQueue, { castId: cast._id.toString() });
 
   res.status(201).json({
@@ -135,8 +135,9 @@ exports.createCast = async (req, res) => {
   });
 };
 
+/** Casts as cards: the transcript, the quiz and the processing state come with GET /cast/:id. */
 exports.getAllCast = async (req, res) => {
-  res.status(200).json(await Cast.find().sort({ _id: 1 }));
+  res.status(200).json(await Cast.find().select(CARD_PROJECTION).sort({ _id: 1 }).lean());
 };
 
 exports.getOneCast = async (req, res) => {
@@ -182,11 +183,10 @@ exports.updateOneCast = async (req, res) => {
     if (thumbnailUrl) cast.castimageurl = thumbnailUrl;
   }
 
-  await moveContentTopic({
+  await moveCastTopic({
     from: previousTopic,
     to: { name: topic, departmentName: department },
-    contentId: cast._id,
-    contentType: 'cast',
+    castId: cast._id,
   });
   try {
     await cast.save();
@@ -213,12 +213,11 @@ exports.deleteOneCast = async (req, res) => {
     deleteMediaByUrl(cast.subtitleurl, MEDIA_DIRS.castSubtitles),
   ]);
   await Cast.deleteOne({ _id: cast._id });
-  await removeContentReferences(cast._id);
+  await removeCastReferences(cast._id);
   const topicResult = await removeExistingTopic({
     name: cast.topic,
     departmentName: cast.department,
-    contentId: cast._id,
-    contentType: 'cast',
+    castId: cast._id,
   });
 
   let message = 'Cast deleted successfully.';
@@ -228,11 +227,17 @@ exports.deleteOneCast = async (req, res) => {
 };
 
 exports.getAllCastByCategory = async (req, res) => {
-  res.status(200).json(await Cast.find({ category: req.params.id }).sort({ _id: 1 }));
+  const casts = await Cast.find({ category: req.params.id })
+    .select(CARD_PROJECTION)
+    .sort({ _id: 1 });
+  res.status(200).json(casts);
 };
 
 exports.getAllCastByBrightmindid = async (req, res) => {
-  res.status(200).json(await Cast.find({ brightmindid: req.params.id }).sort({ _id: 1 }));
+  const casts = await Cast.find({ brightmindid: req.params.id })
+    .select(CARD_PROJECTION)
+    .sort({ _id: 1 });
+  res.status(200).json(casts);
 };
 
 /** Optional `?topic=` query narrows the department to one topic. */
@@ -241,7 +246,7 @@ exports.getAllCastByDepartment = async (req, res) => {
   if (typeof req.query.topic === 'string' && req.query.topic) {
     filter.topic = req.query.topic;
   }
-  res.status(200).json(await Cast.find(filter).sort({ _id: 1 }));
+  res.status(200).json(await Cast.find(filter).select(CARD_PROJECTION).sort({ _id: 1 }));
 };
 
 exports.getEvaluationForCast = async (req, res) => {
@@ -263,7 +268,7 @@ exports.updateCastRating = async (req, res) => {
 
 /** All casts, newest first. */
 exports.getCastTrending = async (req, res) => {
-  res.status(200).json(await Cast.find().sort({ dateadded: -1 }));
+  res.status(200).json(await Cast.find().select(CARD_PROJECTION).sort({ dateadded: -1 }));
 };
 
 exports.getPopularDepartment = async (req, res) => {

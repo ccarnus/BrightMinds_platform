@@ -25,7 +25,6 @@ const userSchema = new mongoose.Schema({
   evaluation_list: [
     {
       contentid: { type: String, required: false },
-      type: { type: String, required: false },
       watched: { type: Boolean, required: false },
       answered: { type: Boolean, required: false },
     },
@@ -33,7 +32,6 @@ const userSchema = new mongoose.Schema({
   bookmarkedcontent: [
     {
       contentid: { type: String, required: false },
-      type: { type: String, enum: ['cast', 'article'], required: false },
       bookmarkedAt: { type: Date, default: Date.now },
     },
   ],
@@ -54,14 +52,14 @@ const userSchema = new mongoose.Schema({
     focusField: { type: String, required: false },
     startedAt: { type: Date, required: false },
     stats: {
-      contents: { type: Number, default: 0 },
+      casts: { type: Number, default: 0 },
       correctAnswers: { type: Number, default: 0 },
       papers: { type: Number, default: 0 },
       fields: [
         {
           _id: false,
           field: { type: String, required: true },
-          contents: { type: Number, default: 0 },
+          casts: { type: Number, default: 0 },
           correctAnswers: { type: Number, default: 0 },
           papers: { type: Number, default: 0 },
         },
@@ -92,12 +90,6 @@ const userSchema = new mongoose.Schema({
     {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Cast',
-    },
-  ],
-  articlePublications: [
-    {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Article',
     },
   ],
   // Quiz gamification, written only by POST /user/:id/quiz (see services/rewards.js).

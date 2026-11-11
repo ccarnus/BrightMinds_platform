@@ -1,4 +1,4 @@
-// Picks the OpenAlex topic (within the content's department) that best matches a cast/article.
+// Picks the OpenAlex topic (within the cast's department) that best matches a cast.
 const axios = require('axios');
 const config = require('../config');
 const { departmentIdByName } = require('../lists/departments');

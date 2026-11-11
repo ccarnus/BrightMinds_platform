@@ -30,7 +30,6 @@ servers:
 tags:
   - name: System
   - name: Cast
-  - name: Article
   - name: User
   - name: Learning
   - name: University
@@ -120,6 +119,7 @@ paths:
     get:
       tags: [Cast]
       summary: List all casts
+      description: Casts as cards (see `CastCard`), oldest first.
       responses:
         "200":
           description: List of casts
@@ -128,7 +128,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Cast"
+                  $ref: "#/components/schemas/CastCard"
   /cast/all/simplified:
     get:
       tags: [Cast]
@@ -156,7 +156,7 @@ paths:
     get:
       tags: [Cast]
       summary: Get trending casts
-      description: All casts, newest first.
+      description: All casts as cards (see `CastCard`), newest first.
       responses:
         "200":
           description: Trending casts
@@ -165,7 +165,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Cast"
+                  $ref: "#/components/schemas/CastCard"
   /cast/popular/department:
     get:
       tags: [Cast]
@@ -194,13 +194,13 @@ paths:
         - $ref: "#/components/parameters/CategoryParam"
       responses:
         "200":
-          description: List of casts
+          description: List of casts (cards)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Cast"
+                  $ref: "#/components/schemas/CastCard"
   /cast/department/{id}:
     get:
       tags: [Cast]
@@ -215,13 +215,13 @@ paths:
             type: string
       responses:
         "200":
-          description: List of casts
+          description: List of casts (cards)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Cast"
+                  $ref: "#/components/schemas/CastCard"
   /cast/brightmindid/{id}:
     get:
       tags: [Cast]
@@ -230,13 +230,13 @@ paths:
         - $ref: "#/components/parameters/BrightmindIdParam"
       responses:
         "200":
-          description: List of casts
+          description: List of casts (cards)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Cast"
+                  $ref: "#/components/schemas/CastCard"
   /cast/evaluation/{id}:
     get:
       tags: [Cast]
@@ -371,283 +371,6 @@ paths:
     post:
       tags: [Cast]
       summary: Rate a cast
-      description: "`+` counts as a 10/10 vote, `-` as 0/10; averaged into `rating.value`."
-      security:
-        - bearerAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RatingAction"
-      responses:
-        "200":
-          description: Rating updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RatingUpdateResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  # ------------------------------------------------------------------ Article
-  /article:
-    post:
-      tags: [Article]
-      summary: Create an article
-      description: |
-        Multipart upload of the cover image (required, never generated) plus an `article` form
-        field holding a JSON-encoded `ArticleCreate` object (plain form fields are accepted
-        too). The image is re-encoded as JPEG (max 1600 px, metadata removed). The article is
-        saved immediately; its evaluation question and (if not given) department and topic are
-        generated with OpenAI in a background queue, retried automatically (see `processing`).
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                article:
-                  type: string
-                  description: JSON-encoded `ArticleCreate` object.
-                  example: '{"title":"My article","description":"...","brightmindid":"665f1c2e9b1e8a0012345678","university":"MIT","category":"Research","visibility":"public","department":"Chemistry","topic":"Organic Chemistry"}'
-                image:
-                  type: string
-                  format: binary
-                  description: Cover image (image/jpeg, image/png or image/webp, max 10 MB).
-              required: [article, image]
-            encoding:
-              image:
-                contentType: image/jpeg, image/png, image/webp
-      responses:
-        "201":
-          description: Article created
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/CreatedResponse"
-                  - type: object
-                    properties:
-                      articleimageurl:
-                        type: string
-        "400":
-          description: Missing or unreadable cover image, unsupported image type, or invalid article
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-    get:
-      tags: [Article]
-      summary: List all articles
-      responses:
-        "200":
-          description: List of articles
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Article"
-  /article/trending/right/now:
-    get:
-      tags: [Article]
-      summary: Get trending articles
-      description: Articles added in the last 14 days, best rated first.
-      responses:
-        "200":
-          description: Trending articles
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Article"
-  /article/category/{id}:
-    get:
-      tags: [Article]
-      summary: Get articles by category
-      parameters:
-        - $ref: "#/components/parameters/CategoryParam"
-      responses:
-        "200":
-          description: List of articles
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Article"
-  /article/department/{id}:
-    get:
-      tags: [Article]
-      summary: Get articles by department
-      parameters:
-        - $ref: "#/components/parameters/DepartmentParam"
-      responses:
-        "200":
-          description: List of articles
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Article"
-  /article/brightmindid/{id}:
-    get:
-      tags: [Article]
-      summary: Get articles by creator (brightmindid)
-      parameters:
-        - $ref: "#/components/parameters/BrightmindIdParam"
-      responses:
-        "200":
-          description: List of articles
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Article"
-  /article/evaluation/{id}:
-    get:
-      tags: [Article]
-      summary: Get evaluation for an article
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Evaluation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  evaluation:
-                    $ref: "#/components/schemas/Evaluation"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-  /article/{id}:
-    get:
-      tags: [Article]
-      summary: Get article by ID
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Article
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Article"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    put:
-      tags: [Article]
-      summary: Update article (partial)
-      description: |
-        Partial update. Only the fields present are changed. Send JSON, or multipart with an
-        optional new cover `image` (replaces and deletes the previous one) and an `article` JSON
-        field. The cover cannot be set by URL.
-      security:
-        - bearerAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ArticleUpdate"
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                article:
-                  type: string
-                  description: JSON-encoded `ArticleUpdate` object (fields to change).
-                image:
-                  type: string
-                  format: binary
-                  description: Optional new cover (image/jpeg, image/png or image/webp, max 10 MB).
-            encoding:
-              image:
-                contentType: image/jpeg, image/png, image/webp
-      responses:
-        "201":
-          description: Article updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-    delete:
-      tags: [Article]
-      summary: Delete article
-      description: Deletes the article, its image, user references and topic link.
-      security:
-        - bearerAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Article deleted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-  /article/{id}/rating:
-    get:
-      tags: [Article]
-      summary: Get article rating
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Rating
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  rating:
-                    $ref: "#/components/schemas/Rating"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    post:
-      tags: [Article]
-      summary: Rate an article
       description: "`+` counts as a 10/10 vote, `-` as 0/10; averaged into `rating.value`."
       security:
         - bearerAuth: []
@@ -1006,11 +729,11 @@ paths:
   /user/add/content/{id}:
     post:
       tags: [User]
-      summary: Add content to evaluation list
+      summary: Add a cast to the evaluation list
       description: |
-        Marks the content as watched. The first time a content is added, it counts in the
-        user's learning stats (in total and for the content's department), which may reach a
-        milestone of the learning path (`newMilestones`).
+        Marks the cast as watched. The first time a cast is added, it counts in the user's
+        learning stats (in total and for the cast's department), which may reach a milestone of
+        the learning path (`newMilestones`).
       security:
         - bearerAuth: []
       parameters:
@@ -1024,11 +747,8 @@ paths:
               properties:
                 contentId:
                   type: string
-                  description: Cast or article ObjectId.
-                type:
-                  type: string
-                  enum: [cast, article]
-              required: [contentId, type]
+                  description: Cast ObjectId.
+              required: [contentId]
       responses:
         "200":
           description: Content added (or already in the list)
@@ -1127,12 +847,13 @@ paths:
       tags: [User]
       summary: Submit quiz answers and earn rewards
       description: >-
-        Grades the answers against the stored `evaluation.correct` of each cast/article and awards XP
+        Grades the answers against the stored `evaluation.correct` of each cast and awards XP
         (+10 per correct answer, +2 per wrong answer, combo bonus +5 per consecutive correct answer up to +20,
         +20 for a perfect quiz of 2+ questions, daily streak bonus +5 per streak day up to +35 on the first
-        quiz of the day), updates the daily streak, unlocks badges and adds the correct answers to
-        `tracking.progress`. Only questions still pending in the user's evaluation list are graded; correct
-        ones are marked as answered. Answers for other content are ignored, so a replay earns nothing.
+        quiz of the day), updates the daily streak, unlocks badges and counts the correct answers in the
+        learning stats (which may reach a milestone: `newMilestones`). Only questions still pending in the
+        user's evaluation list are graded; correct ones are marked as answered. Answers for other casts are
+        ignored, so a replay earns nothing.
       security:
         - bearerAuth: []
       parameters:
@@ -1235,7 +956,9 @@ paths:
           required: false
           schema:
             type: boolean
-          description: Include the full cast/article document with each bookmark (`true`, `1` or `yes`).
+          description: >-
+            Include the bookmarked cast with each bookmark (`true`, `1` or `yes`), as a card (no
+            transcript, quiz or processing state). `content` is null when the cast was deleted.
         - name: includeContent
           in: query
           required: false
@@ -1268,8 +991,8 @@ paths:
       tags: [User]
       summary: Add bookmark
       description: |
-        If `type` is omitted, it is inferred from the collection the content belongs to.
-        Returns 400 if the content is already bookmarked.
+        Bookmarks a cast. Returns 404 if the cast does not exist and 400 if it is already
+        bookmarked.
       security:
         - bearerAuth: []
       parameters:
@@ -1284,9 +1007,6 @@ paths:
                   properties:
                     contentId:
                       type: string
-                    type:
-                      type: string
-                      enum: [cast, article]
                   required: [contentId]
                 - type: object
                   properties:
@@ -1294,12 +1014,6 @@ paths:
                       type: string
                       deprecated: true
                   required: [castId]
-                - type: object
-                  properties:
-                    articleId:
-                      type: string
-                      deprecated: true
-                  required: [articleId]
       responses:
         "201":
           description: Bookmark added
@@ -1328,13 +1042,6 @@ paths:
           required: true
           schema:
             type: string
-        - name: type
-          in: query
-          required: false
-          description: Only remove the bookmark if its type matches.
-          schema:
-            type: string
-            enum: [cast, article]
       responses:
         "200":
           description: Bookmark removed
@@ -1442,13 +1149,13 @@ paths:
         - $ref: "#/components/parameters/IdParam"
       responses:
         "200":
-          description: List of casts
+          description: List of casts (cards)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Cast"
+                  $ref: "#/components/schemas/CastCard"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2482,9 +2189,9 @@ components:
     LearningMetric:
       type: string
       description: >-
-        contents = casts watched and articles read, correctAnswers = quiz questions answered
+        casts = casts watched, correctAnswers = quiz questions answered
         correctly, fields = departments explored, papers = research papers opened.
-      enum: [contents, correctAnswers, fields, papers]
+      enum: [casts, correctAnswers, fields, papers]
     LearningGoal:
       type: object
       properties:
@@ -2591,7 +2298,7 @@ components:
           type: object
           description: Lifetime learning activity (never reset).
           properties:
-            contents:
+            casts:
               type: number
             correctAnswers:
               type: number
@@ -2607,7 +2314,7 @@ components:
                 properties:
                   field:
                     type: string
-                  contents:
+                  casts:
                     type: number
                   correctAnswers:
                     type: number
@@ -2735,6 +2442,44 @@ components:
           type: string
         processing:
           $ref: "#/components/schemas/Processing"
+    CastCard:
+      type: object
+      description: >-
+        A cast as returned by the list endpoints, the feed and expanded bookmarks: like `Cast`
+        without `description` (the transcript), `evaluation` and `processing`, which only come with
+        `GET /cast/{id}` (the quiz question with `GET /cast/evaluation/{id}`).
+      properties:
+        _id:
+          type: string
+        title:
+          type: string
+        department:
+          type: string
+        brightmindid:
+          type: string
+        casturl:
+          type: string
+        castimageurl:
+          type: string
+        university:
+          type: string
+        category:
+          type: string
+        visibility:
+          type: string
+        link:
+          type: string
+        duration:
+          type: number
+        dateadded:
+          type: string
+          format: date-time
+        rating:
+          $ref: "#/components/schemas/Rating"
+        topic:
+          type: string
+        subtitleurl:
+          type: string
     Processing:
       type: object
       description: |
@@ -2821,110 +2566,6 @@ components:
         dateadded:
           type: string
           format: date-time
-    Article:
-      type: object
-      properties:
-        _id:
-          type: string
-        title:
-          type: string
-        department:
-          type: string
-        brightmindid:
-          type: string
-        description:
-          type: string
-        articleimageurl:
-          type: string
-          description: The cover uploaded by the author (JPEG).
-        university:
-          type: string
-        category:
-          type: string
-        visibility:
-          type: string
-        link:
-          type: string
-        duration:
-          type: number
-        dateadded:
-          type: string
-          format: date-time
-        rating:
-          $ref: "#/components/schemas/Rating"
-        evaluation:
-          $ref: "#/components/schemas/Evaluation"
-        topic:
-          type: string
-        processing:
-          $ref: "#/components/schemas/Processing"
-    ArticleCreate:
-      type: object
-      description: Content of the `article` multipart field for `POST /article` (with the `image` file).
-      properties:
-        title:
-          type: string
-          maxLength: 85
-        description:
-          type: string
-        brightmindid:
-          type: string
-        university:
-          type: string
-        category:
-          type: string
-        visibility:
-          type: string
-        link:
-          type: string
-        department:
-          allOf:
-            - $ref: "#/components/schemas/Department"
-          description: Optional; left empty, the article is stored with `Pending Department`.
-        topic:
-          type: string
-          description: Optional; when omitted the topic (and department) are generated in the background.
-        duration:
-          type: number
-          description: Optional; computed from the description when omitted.
-        dateadded:
-          type: string
-          format: date-time
-      required:
-        - title
-        - description
-        - brightmindid
-        - university
-        - category
-        - visibility
-    ArticleUpdate:
-      type: object
-      description: Partial update; all fields optional.
-      properties:
-        title:
-          type: string
-          maxLength: 85
-        description:
-          type: string
-        brightmindid:
-          type: string
-        university:
-          type: string
-        category:
-          type: string
-        visibility:
-          type: string
-        link:
-          type: string
-        department:
-          $ref: "#/components/schemas/Department"
-        topic:
-          type: string
-        duration:
-          type: number
-        dateadded:
-          type: string
-          format: date-time
     User:
       type: object
       description: Public user representation (credentials and tokens are never returned).
@@ -2959,10 +2600,6 @@ components:
           type: object
           description: Raw learning data; use `GET /user/{id}/learning` for the journey and history.
         castPublications:
-          type: array
-          items:
-            type: string
-        articlePublications:
           type: array
           items:
             type: string
@@ -3023,10 +2660,6 @@ components:
           type: array
           items:
             type: string
-        articlePublications:
-          type: array
-          items:
-            type: string
     PasswordReset:
       type: object
       properties:
@@ -3043,8 +2676,7 @@ components:
       properties:
         contentid:
           type: string
-        type:
-          type: string
+          description: Cast ObjectId.
         watched:
           type: boolean
         answered:
@@ -3054,9 +2686,7 @@ components:
       properties:
         contentid:
           type: string
-        type:
-          type: string
-          enum: [cast, article]
+          description: Cast ObjectId.
         bookmarkedAt:
           type: string
           format: date-time
@@ -3066,19 +2696,15 @@ components:
         contentid:
           type: string
           nullable: true
-        type:
-          type: string
-          nullable: true
-          enum: [cast, article]
         bookmarkedAt:
           type: string
           format: date-time
           nullable: true
         content:
           nullable: true
-          oneOf:
-            - $ref: "#/components/schemas/Cast"
-            - $ref: "#/components/schemas/Article"
+          description: The bookmarked cast as a card; null when the cast was deleted.
+          allOf:
+            - $ref: "#/components/schemas/CastCard"
     BookmarkAddResponse:
       type: object
       properties:
@@ -3089,9 +2715,6 @@ components:
           properties:
             contentid:
               type: string
-            type:
-              type: string
-              enum: [cast, article]
     Preference:
       type: object
       properties:
@@ -3105,7 +2728,7 @@ components:
       type: object
       description: >-
         Legacy view of the learning path (app <= 1.0.5): `progress` / `target` sum the goals of the
-        next milestone; `history` is the number of contents per department.
+        next milestone; `history` is the number of casts watched per department.
       properties:
         objective:
           type: string
@@ -3420,14 +3043,8 @@ components:
           type: string
         departmentName:
           type: string
-        articleCount:
-          type: integer
         castCount:
           type: integer
-        articleIDs:
-          type: array
-          items:
-            type: string
         castIDs:
           type: array
           items:

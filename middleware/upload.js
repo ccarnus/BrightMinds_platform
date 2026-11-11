@@ -21,13 +21,6 @@ const VIDEO_TYPES = {
   'video/x-m4v': 'm4v',
   'video/3gpp': '3gp',
 };
-// Article covers are re-encoded with sharp, which cannot read HEIC: the app sends JPEG.
-const COVER_IMAGE_TYPES = {
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/png': 'png',
-  'image/webp': 'webp',
-};
 
 const MB = 1024 * 1024;
 
@@ -96,12 +89,6 @@ module.exports = {
     dir: MEDIA_DIRS.profilePictures,
     field: 'image',
     mimeTypes: IMAGE_TYPES,
-    maxSizeMb: 10,
-  }),
-  articleImage: createUpload({
-    dir: MEDIA_DIRS.articleImages,
-    field: 'image',
-    mimeTypes: COVER_IMAGE_TYPES,
     maxSizeMb: 10,
   }),
   universityIcon: createUpload({

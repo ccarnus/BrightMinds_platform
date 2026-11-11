@@ -1,10 +1,10 @@
 # CLAUDE.md
 
 BrightMinds backend: REST API (Express 5, Mongoose 8, Node 22) for the BrightMinds mobile app.
-Content = **casts** (videos) and **articles**, enriched in the background with OpenAI
+The only content is **casts** (videos; there are no articles), enriched in the background with OpenAI
 (transcription + subtitles, quiz question, department; see README "AI processing") and classified
 into OpenAlex **topics** whose impact/activity scores are recomputed weekly. Images are never
-generated: casts use a frame of their video, articles a cover uploaded by the author.
+generated: a cast uses a frame of its video.
 
 ## Commands
 
@@ -27,7 +27,7 @@ npm run check          # lint + format check + tests — run before declaring wo
 | `routes/`              | One router per resource; `routes/index.js` maps mount prefix → router                             |
 | `controllers/`         | Request handlers (thin: validate, call models/services, respond)                                  |
 | `services/`            | Business logic & integrations (OpenAI, mail, media files, topics, metrics, rewards, learning)     |
-| `queues/`              | Bull queues; both run `services/ai_pipeline.js` (daily retry: `services/ai_retry.js`)             |
+| `queues/`              | Bull cast queue, runs `services/ai_pipeline.js` (daily retry: `services/ai_retry.js`)             |
 | `middleware/`          | `auth` (JWT), `upload` (multer), `error_handler`, `rate_limit`                                    |
 | `models/`              | Mongoose schemas                                                                                  |
 | `views/html.js`        | HTML pages (email confirmation, password reset) and email bodies                                  |
@@ -51,12 +51,17 @@ npm run check          # lint + format check + tests — run before declaring wo
   (`mediaUrl`, `mediaPathFromUrl`, `deleteMediaByUrl`). Never join user input into a path.
 - **Images**: never generate images (no image model). Cast images are video frames from
   `services/thumbnail.js` (`createCastThumbnail`: `time` = author's moment, omitted = automatic;
-  files `thumb_*.jpg`, which the startup backfill uses to recognise converted casts). Article
-  covers are uploads re-encoded by `services/uploaded_image.js`. Neither URL is client-editable.
+  files `thumb_*.jpg`, which the startup backfill uses to recognise converted casts). The URL is
+  not client-editable.
 - **Auth**: protect write routes with `authenticate`, per-user routes with `[authenticate, requireSelf('id')]`.
   Enforcement is controlled by `AUTH_REQUIRED` (currently off in production until the app sends tokens).
 - **Topics**: always go through `services/topics.js` (`createTopicIfNotExist`, `removeExistingTopic`,
-  `moveContentTopic`). `Pending Topic` / `Pending Department` are placeholders until a queue job fills them.
+  `moveCastTopic`). `Pending Topic` / `Pending Department` are placeholders until a queue job fills them.
+- **Casts only**: there is a single content type. `evaluation_list` and `bookmarkedcontent` entries hold cast ids
+  (`contentid`) with no `type`; cast rules shared by the endpoints live in `services/cast.js`. List endpoints return
+  cards (`CARD_PROJECTION`: no `description`, `evaluation`, `processing`): add new list endpoints with the same
+  projection. Data left by the retired articles is cleaned at start by `services/cast_only_migration.js`
+  (idempotent); never reintroduce `articles` without a new design.
 - **Quiz rewards**: `services/rewards.js` holds the pure rules (XP, levels, streak, badges);
   `POST /user/:id/quiz` grades against the stored `evaluation.correct` and is the only writer of
   `user.rewards` (never add it to `SELF_EDITABLE_FIELDS`). The app mirrors the XP/level rules in
@@ -71,7 +76,7 @@ npm run check          # lint + format check + tests — run before declaring wo
   (idempotent, keyed on `learning.version`); `GET /user/:id/tracking` and `PUT /user/:id/update/tracking` stay as
   derived views for app versions <= 1.0.5.
 - **Config**: new env var → `config/index.js` + `.env.example` (+ README if operators must set it).
-- **Units**: cast and article `duration` are in minutes.
+- **Units**: cast `duration` is in minutes.
 - **Style**: Prettier (single quotes, 100 cols) + ESLint. Short JSDoc on non-obvious functions; no noise comments.
 
 ## Adding an endpoint
@@ -95,7 +100,7 @@ npm run check          # lint + format check + tests — run before declaring wo
 ## Gotchas
 
 - `User` `toJSON` strips `password` and tokens, but `.lean()` bypasses it — never return lean user docs.
-- Bull queue names `castQueue` / `articleQueue` are persisted in Redis: don't rename.
+- Bull queue name `castQueue` is persisted in Redis: don't rename.
 - AI calls go through `callOpenAI()` (`services/openai.js`), which classifies errors
   (`config` / `transient` / `content`) — that kind drives retries, alerts and the attempt count.
   Pipeline steps must stay idempotent (skip when the output exists) and save as soon as they succeed.

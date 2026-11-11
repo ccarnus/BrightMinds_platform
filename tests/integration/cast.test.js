@@ -176,6 +176,43 @@ describe('reading casts', () => {
     expect(popular.body[0]).toEqual({ _id: 'Chemistry', count: 2 });
   });
 
+  test('lists return cards, without the transcript, the quiz or the processing state', async () => {
+    const cast = await createCast({
+      evaluation: { question: 'Q?', responses: ['a', 'b'], correct: 'a' },
+      castimageurl: imageUrl('thumb_x.jpg'),
+    });
+    const paths = [
+      '/cast',
+      '/cast/trending/right/now',
+      `/cast/category/${cast.category}`,
+      `/cast/department/${cast.department}`,
+      `/cast/brightmindid/${cast.brightmindid}`,
+    ];
+    for (const path of paths) {
+      const [card] = (await request(app).get(path).expect(200)).body;
+      expect(card).toMatchObject({
+        _id: cast._id.toString(),
+        title: cast.title,
+        casturl: cast.casturl,
+        castimageurl: cast.castimageurl,
+        duration: 2,
+        rating: { value: 5, count: 1 },
+      });
+      ['description', 'evaluation', 'processing'].forEach((field) =>
+        expect(card).not.toHaveProperty(field)
+      );
+    }
+    // The detail keeps everything.
+    const detail = (await request(app).get(`/cast/${cast._id}`).expect(200)).body;
+    expect(detail).toMatchObject({ description: cast.description, evaluation: { correct: 'a' } });
+    expect(detail.processing.status).toBe('pending');
+  });
+
+  test('articles are gone', async () => {
+    await request(app).get('/article').expect(404);
+    await request(app).post('/article').send({}).expect(404);
+  });
+
   test('single cast, evaluation and rating', async () => {
     const cast = await createCast({
       evaluation: { question: 'Q?', responses: ['a'], correct: 'a' },

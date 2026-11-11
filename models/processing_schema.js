@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 /**
- * State of the background AI processing of a cast/article (see services/ai_pipeline.js).
+ * State of the background AI processing of a cast (see services/ai_pipeline.js).
  * `attempts` only counts failures caused by the item itself (not OpenAI outages or bad keys).
  */
 const processingSchema = new mongoose.Schema(

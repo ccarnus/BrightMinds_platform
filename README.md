@@ -1,9 +1,8 @@
 # BrightMinds Backend
 
-REST API for the BrightMinds app: casts (videos), articles, users, universities, virtual labs and
-research topics. New content is enriched in the background with OpenAI (transcription, quiz
-question, topic detection). Images are never generated: cast images are frames of their video,
-article covers are uploaded by their authors.
+REST API for the BrightMinds app: casts (videos), users, universities, virtual labs and research
+topics. New casts are enriched in the background with OpenAI (transcription, quiz question, topic
+detection). Images are never generated: a cast's image is a frame of its video.
 
 **Stack:** Node 22 · Express 5 · MongoDB (Mongoose 8) · Redis (Bull queues) · Jest · Docker Compose
 
@@ -36,33 +35,45 @@ With docker compose, `MONGODB_URI` is set by the stack (bundled MongoDB); use
 
 ## AI processing
 
-New casts and articles are enriched in the background (`services/ai_pipeline.js`):
-transcript + subtitles (casts), quiz question + department (one structured call), OpenAlex
-topic. Each step is saved as soon as it succeeds and skipped when its output exists, so retries
-resume where they stopped. **No image is ever generated** (see "Images" below).
+New casts are enriched in the background (`services/ai_pipeline.js`): transcript + subtitles,
+quiz question + department (one structured call), OpenAlex topic. Each step is saved as soon as
+it succeeds and skipped when its output exists, so retries resume where they stopped. **No image
+is ever generated** (see "Images" below).
 
 - **Failures:** OpenAI unreachable / rate-limited → retried 4 times with backoff. Bad key, no
   credit or unknown model → alert email (`OPENAI_ALERT_EMAIL_TO`) and OpenAI calls paused 1 h.
-  Item-specific errors (moderation...) → item marked `failed` after `AI_MAX_ATTEMPTS` days.
-- **Daily retry** (`AI_RETRY_CRON`, default 03:00 server time) re-queues everything still missing
-  outputs. State per item: `processing` field (`pending` / `processing` / `done` / `failed`).
+  Cast-specific errors (moderation...) → cast marked `failed` after `AI_MAX_ATTEMPTS` days.
+- **Daily retry** (`AI_RETRY_CRON`, default 03:00 server time) re-queues every cast still missing
+  outputs. State per cast: `processing` field (`pending` / `processing` / `done` / `failed`).
 - **Commands** (on the server: `docker compose exec brightminds npm run ai -- <command>`):
-  `check` (key, models, parameters) · `status` (unprocessed items and last error) ·
-  `retry` (queue now) · `retry --failed` (also items that gave up).
+  `check` (key, models, parameters) · `status` (unprocessed casts and last error) ·
+  `retry` (queue now) · `retry --failed` (also casts that gave up).
 - **Models** (env overrides): `OPENAI_CHAT_MODEL` (`gpt-6.1-terra`, with
   `OPENAI_REASONING_EFFORT=low`), `OPENAI_TRANSCRIPTION_MODEL` (`whisper-1`: the only model
   with timestamps, so the only one producing subtitles; other models give text only).
 
 ## Images
 
-- **Casts:** the image is a frame of the video (`services/thumbnail.js`, ffmpeg), saved as a
-  980×560 JPEG `cast_images/thumb_*.jpg` at upload. The app sends the moment the author picked
-  (`thumbnailTime`, seconds); without it (API uploads) the most representative frame after the
-  intro is chosen automatically. `PUT /cast/:id` with `thumbnailTime` re-picks it.
-- **Articles:** the author uploads the cover (`POST /article` multipart `image`, required;
-  JPEG/PNG/WebP). It is re-encoded as JPEG (max 1600 px, EXIF/GPS metadata removed).
-- At startup, casts whose image is not a video thumbnail (former AI illustrations) get an
-  automatic thumbnail in the background (`services/thumbnail_backfill.js`, idempotent).
+A cast's image is a frame of its video (`services/thumbnail.js`, ffmpeg), saved as a 980×560 JPEG
+`cast_images/thumb_*.jpg` at upload. The app sends the moment the author picked (`thumbnailTime`,
+seconds); without it (API uploads) the most representative frame after the intro is chosen
+automatically. `PUT /cast/:id` with `thumbnailTime` re-picks it. At startup, casts whose image is
+not a video thumbnail (former AI illustrations) get an automatic thumbnail in the background
+(`services/thumbnail_backfill.js`, idempotent).
+
+## Casts only (articles removed)
+
+The app only shares casts. At startup `services/cast_only_migration.js` (idempotent) cleans the
+database: users lose `articlePublications` and the `type` of their evaluation list / bookmarks
+(article entries are removed), the learning stat `contents` becomes `casts`, topics lose
+`articleIDs` / `articleCount` (topics that only had articles are deleted) and an empty `articles`
+collection is dropped (one that still holds documents is left alone, with a warning). Leftover
+`articleQueue` jobs in Redis are harmless; remove them with
+`redis-cli --scan --pattern 'bull:articleQueue:*' | xargs redis-cli del`.
+
+List endpoints (`/cast`, trending, by category / department / author, suggestions, expanded
+bookmarks) return cards: the transcript (`description`), the quiz (`evaluation`) and `processing`
+only come with `GET /cast/:id` (the quiz question with `GET /cast/evaluation/:id`).
 
 ## API
 

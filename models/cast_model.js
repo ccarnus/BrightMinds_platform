@@ -28,4 +28,10 @@ const castSchema = new mongoose.Schema({
   processing: { type: processingSchema, default: () => ({}) },
 });
 
+// Lookups made by the list endpoints (department/topic browsing, "my casts", categories, feed order).
+castSchema.index({ department: 1, topic: 1 });
+castSchema.index({ brightmindid: 1 });
+castSchema.index({ category: 1 });
+castSchema.index({ dateadded: -1 });
+
 module.exports = mongoose.model('Cast', castSchema);

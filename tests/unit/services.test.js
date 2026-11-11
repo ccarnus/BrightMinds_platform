@@ -1,4 +1,3 @@
-const computeDuration = require('../../services/compute_duration');
 const isValidEmail = require('../../services/email_validator');
 const OpenAI = require('openai');
 const { toEvaluation } = require('../../services/analyze_content');
@@ -12,19 +11,6 @@ const { AIError, classifyError } = require('../../services/openai');
 const { getFieldId } = require('../../services/generate_topic');
 const { departments, departmentNames, departmentIdByName } = require('../../lists/departments');
 const { escapeHtml, passwordResetEmail } = require('../../views/html');
-
-describe('computeDuration', () => {
-  test('is 150 words per minute, rounded up', () => {
-    expect(computeDuration('word '.repeat(150))).toBe(1);
-    expect(computeDuration('word '.repeat(151))).toBe(2);
-  });
-
-  test('is 0 for empty or whitespace-only text', () => {
-    expect(computeDuration('')).toBe(0);
-    expect(computeDuration('   \n ')).toBe(0);
-    expect(computeDuration(undefined)).toBe(0);
-  });
-});
 
 describe('isValidEmail', () => {
   test.each(['a@b.co', 'first.last@uni.edu'])('accepts %s', (email) => {

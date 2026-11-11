@@ -27,7 +27,7 @@ test('public routes stay public', async () => {
 });
 
 test.each([
-  ['post', '/article'],
+  ['post', '/cast'],
   ['delete', '/cast/507f1f77bcf86cd799439011'],
   ['post', '/cast/507f1f77bcf86cd799439011/rating'],
   ['post', '/topic'],

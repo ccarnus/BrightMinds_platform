@@ -2,18 +2,10 @@
 jest.mock('../../services/transcription', () => jest.fn());
 const transcribeVideo = require('../../services/transcription');
 
-const Article = require('../../models/article_model');
 const Cast = require('../../models/cast_model');
 const { processCastJob } = require('../../queues/cast_queue');
-const { processArticleJob } = require('../../queues/article_queue');
 const { useTestDatabase } = require('../helpers/db');
-const {
-  MEDIA_DIRS,
-  createArticle,
-  createCast,
-  createMediaFile,
-  mediaFileExists,
-} = require('../helpers/fixtures');
+const { MEDIA_DIRS, createCast, createMediaFile, mediaFileExists } = require('../helpers/fixtures');
 
 useTestDatabase();
 
@@ -90,18 +82,4 @@ test('cast job assigns a topic when none was given', async () => {
   const cast = await createCast({ description: '', casturl, topic: 'Pending Topic' });
   await processCastJob(job({ castId: cast._id.toString() }));
   expect((await Cast.findById(cast._id)).topic).toBe('Mock Topic');
-});
-
-test('article job tolerates deleted articles and completes the others', async () => {
-  await expect(
-    processArticleJob(job({ articleId: '507f1f77bcf86cd799439011' }))
-  ).resolves.toBeUndefined();
-
-  const article = await createArticle({ articleimageurl: undefined, topic: 'Pending Topic' });
-  await processArticleJob(job({ articleId: article._id.toString() }));
-  const updated = await Article.findById(article._id);
-  expect(updated.evaluation.question).toBe('Mock question?');
-  expect(updated.articleimageurl).toBeUndefined(); // covers are uploaded by authors only
-  expect(updated.topic).toBe('Mock Topic');
-  expect(updated.processing.status).toBe('done');
 });

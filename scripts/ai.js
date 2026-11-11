@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Operator commands for the AI pipeline. On the server:
 //   docker compose exec brightminds node scripts/ai.js <command>
-//   status            content still missing AI outputs (with last error)
-//   retry [--failed]  queue unprocessed content now (--failed also retries items that gave up)
+//   status            casts still missing AI outputs (with last error)
+//   retry [--failed]  queue unprocessed casts now (--failed also retries casts that gave up)
 //   check             verify the OpenAI key, the configured models and the chat parameters
 const mongoose = require('mongoose');
 const config = require('../config');
@@ -10,16 +10,14 @@ const { callOpenAI } = require('../services/openai');
 const { enqueueRetries, getAIStatus } = require('../services/ai_retry');
 
 const printStatus = async () => {
-  const status = await getAIStatus();
-  for (const [type, { total, unprocessed }] of Object.entries(status)) {
-    console.log(`\n${type}s: ${total} total, ${unprocessed.length} missing AI outputs`);
-    for (const item of unprocessed) {
-      const when = item.lastAttemptAt ? new Date(item.lastAttemptAt).toISOString() : 'never';
-      console.log(
-        `  [${item.status}] ${item.title} (${item.id}) attempts=${item.attempts} last=${when}`
-      );
-      if (item.lastError) console.log(`      ${item.lastError}`);
-    }
+  const { total, unprocessed } = await getAIStatus();
+  console.log(`\ncasts: ${total} total, ${unprocessed.length} missing AI outputs`);
+  for (const item of unprocessed) {
+    const when = item.lastAttemptAt ? new Date(item.lastAttemptAt).toISOString() : 'never';
+    console.log(
+      `  [${item.status}] ${item.title} (${item.id}) attempts=${item.attempts} last=${when}`
+    );
+    if (item.lastError) console.log(`      ${item.lastError}`);
   }
 };
 
@@ -84,10 +82,8 @@ const main = async () => {
     if (command === 'status') await printStatus();
     else {
       const queued = await enqueueRetries({ includeFailed: flag === '--failed' });
-      console.log(`Queued ${queued.cast} cast(s) and ${queued.article} article(s).`);
-      const { castQueue } = require('../queues/cast_queue');
-      const { articleQueue } = require('../queues/article_queue');
-      await Promise.all([castQueue.close(), articleQueue.close()]);
+      console.log(`Queued ${queued} cast(s).`);
+      await require('../queues/cast_queue').castQueue.close();
     }
   } finally {
     await mongoose.disconnect();

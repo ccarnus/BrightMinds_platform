@@ -3,7 +3,6 @@ const fs = require('fs');
 const bcrypt = require('bcrypt');
 const User = require('../../models/user_model');
 const Cast = require('../../models/cast_model');
-const Article = require('../../models/article_model');
 const { signToken } = require('../../middleware/auth');
 const { MEDIA_DIRS, ensureMediaDir, mediaFilePath, mediaUrl } = require('../../services/media');
 
@@ -44,21 +43,6 @@ const createCast = (overrides = {}) =>
     ...overrides,
   });
 
-const createArticle = (overrides = {}) =>
-  Article.create({
-    title: `Article ${unique()}`,
-    description: 'An article about chemistry',
-    department: 'Chemistry',
-    brightmindid: 'author-id',
-    articleimageurl: 'http://api.test/backend/media/article_images/none.jpg',
-    university: 'Test University',
-    category: 'Science',
-    visibility: 'public',
-    duration: 3,
-    topic: 'Organic Chemistry',
-    ...overrides,
-  });
-
 /** Writes a file in a media directory and returns its public URL. */
 const createMediaFile = (dir, filename, content = 'data') => {
   ensureMediaDir(dir);
@@ -75,7 +59,6 @@ module.exports = {
   MEDIA_DIRS,
   createUser,
   createCast,
-  createArticle,
   createMediaFile,
   mediaFileExists,
   authHeader,

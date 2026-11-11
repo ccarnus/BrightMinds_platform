@@ -3,16 +3,16 @@ const learning = require('../../services/learning');
 const profile = (overrides = {}) => ({
   path: null,
   focusField: null,
-  stats: { contents: 0, correctAnswers: 0, papers: 0, fields: [] },
+  stats: { casts: 0, correctAnswers: 0, papers: 0, fields: [] },
   milestones: [],
   history: [],
   ...overrides,
 });
 
 const fields = (...entries) =>
-  entries.map(([field, contents, correctAnswers = 0, papers = 0]) => ({
+  entries.map(([field, casts, correctAnswers = 0, papers = 0]) => ({
     field,
-    contents,
+    casts,
     correctAnswers,
     papers,
   }));
@@ -35,7 +35,7 @@ describe('catalog and path names', () => {
         });
       });
     });
-    expect(paths[2].milestones[0].goals[0].label).toBe('Casts & articles in your focus field');
+    expect(paths[2].milestones[0].goals[0].label).toBe('Casts in your focus field');
   });
 
   test('keys, display names and legacy spellings resolve; others do not', () => {
@@ -72,7 +72,7 @@ describe('journey', () => {
       profile({
         path: 'explorer',
         stats: {
-          contents: 12,
+          casts: 12,
           fields: fields(['Chemistry', 6], ['Medicine', 4], ['Energy', 2], ['Nursing', 0, 1]),
         },
       })
@@ -82,7 +82,7 @@ describe('journey', () => {
     expect(journey.next).toMatchObject({ level: 2, title: 'Pathfinder' });
     expect(journey.next.goals).toEqual([
       { metric: 'fields', label: 'Fields explored', current: 3, target: 4 },
-      { metric: 'contents', label: 'Casts & articles', current: 12, target: 10 },
+      { metric: 'casts', label: 'Casts', current: 12, target: 10 },
     ]);
     expect(journey.next.progress).toBeCloseTo((3 / 4 + 1) / 2);
   });
@@ -91,7 +91,7 @@ describe('journey', () => {
     const base = {
       path: 'deep_learner',
       stats: {
-        contents: 40,
+        casts: 40,
         correctAnswers: 30,
         fields: fields(['Chemistry', 30, 25], ['Medicine', 10, 5]),
       },
@@ -106,8 +106,8 @@ describe('journey', () => {
       profile({ stats: { fields: fields(['Chemistry', 1, 1], ['Medicine', 3], ['Chemistry', 2]) } })
     );
     expect(stats).toEqual([
-      { field: 'Chemistry', contents: 3, correctAnswers: 1, papers: 0 },
-      { field: 'Medicine', contents: 3, correctAnswers: 0, papers: 0 },
+      { field: 'Chemistry', casts: 3, correctAnswers: 1, papers: 0 },
+      { field: 'Medicine', casts: 3, correctAnswers: 0, papers: 0 },
     ]);
   });
 });
@@ -116,7 +116,7 @@ describe('milestones and path changes', () => {
   test('reached milestones are recorded once, per path and focus field', () => {
     const user = profile({
       path: 'follower',
-      stats: { contents: 12, correctAnswers: 9, fields: [] },
+      stats: { casts: 12, correctAnswers: 9, fields: [] },
     });
     const now = new Date('2026-11-10T12:00:00Z');
     const first = learning.recordMilestones(user, now);
@@ -138,7 +138,7 @@ describe('milestones and path changes', () => {
     const user = profile({
       path: 'follower',
       startedAt: new Date('2026-01-01'),
-      stats: { contents: 4, correctAnswers: 2, fields: fields(['Chemistry', 4, 2]) },
+      stats: { casts: 4, correctAnswers: 2, fields: fields(['Chemistry', 4, 2]) },
     });
     learning.recordMilestones(user);
     const now = new Date('2026-11-10');
@@ -153,7 +153,7 @@ describe('milestones and path changes', () => {
       startedAt: now,
       version: 1,
     });
-    // The focus field already has 4 contents and 2 correct answers: Initiate is reached at once.
+    // The focus field already has 4 casts and 2 correct answers: Initiate is reached at once.
     expect(learning.recordMilestones(user, now).map((m) => m.title)).toEqual(['Initiate']);
 
     const serialized = learning.serializeLearning(user);
@@ -223,7 +223,7 @@ describe('legacy tracking view', () => {
     });
     const done = profile({
       path: 'follower',
-      stats: { contents: 500, correctAnswers: 500, fields: [] },
+      stats: { casts: 500, correctAnswers: 500, fields: [] },
     });
     expect(learning.legacyTracking(done)).toMatchObject({ progress: 180, target: 180 });
   });

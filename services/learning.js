@@ -13,7 +13,7 @@ const MAX_HISTORY = 20;
 const MAX_PAPER_IDS = 1000;
 
 const METRICS = {
-  contents: 'Casts & articles',
+  casts: 'Casts',
   correctAnswers: 'Correct answers',
   fields: 'Fields explored',
   papers: 'Research papers opened',
@@ -27,16 +27,16 @@ const PATHS = [
     title: 'Follower',
     tagline: 'Stay on top of your favorite fields',
     description:
-      'Keep up with what is new in the fields you love. Watch, read and test yourself regularly to ' +
+      'Keep up with what is new in the fields you love. Watch and test yourself regularly to ' +
       'stay ahead of the latest discoveries.',
     feed: 'The newest casts from your preferred fields come first.',
     usesFocusField: false,
     milestones: [
-      milestone('Tuned In', { contents: 3, correctAnswers: 2 }),
-      milestone('Regular', { contents: 10, correctAnswers: 8 }),
-      milestone('Insider', { contents: 25, correctAnswers: 20 }),
-      milestone('Trend Spotter', { contents: 50, correctAnswers: 40 }),
-      milestone('Ahead of the Curve', { contents: 100, correctAnswers: 80 }),
+      milestone('Tuned In', { casts: 3, correctAnswers: 2 }),
+      milestone('Regular', { casts: 10, correctAnswers: 8 }),
+      milestone('Insider', { casts: 25, correctAnswers: 20 }),
+      milestone('Trend Spotter', { casts: 50, correctAnswers: 40 }),
+      milestone('Ahead of the Curve', { casts: 100, correctAnswers: 80 }),
     ],
   },
   {
@@ -49,11 +49,11 @@ const PATHS = [
     feed: "Casts from fields you haven't explored yet come first.",
     usesFocusField: false,
     milestones: [
-      milestone('Wanderer', { fields: 2, contents: 3 }),
-      milestone('Pathfinder', { fields: 4, contents: 10 }),
-      milestone('Globetrotter', { fields: 7, contents: 25 }),
-      milestone('Polymath', { fields: 11, contents: 50 }),
-      milestone('Renaissance Mind', { fields: 16, contents: 100 }),
+      milestone('Wanderer', { fields: 2, casts: 3 }),
+      milestone('Pathfinder', { fields: 4, casts: 10 }),
+      milestone('Globetrotter', { fields: 7, casts: 25 }),
+      milestone('Polymath', { fields: 11, casts: 50 }),
+      milestone('Renaissance Mind', { fields: 16, casts: 100 }),
     ],
   },
   {
@@ -61,16 +61,16 @@ const PATHS = [
     title: 'Deep Learner',
     tagline: 'Master one field, step by step',
     description:
-      'Choose a focus field and go deep. Only what you watch, read and answer in that field counts, ' +
+      'Choose a focus field and go deep. Only what you watch and answer in that field counts, ' +
       'building real expertise over time.',
     feed: 'Casts from your focus field come first.',
     usesFocusField: true,
     milestones: [
-      milestone('Initiate', { contents: 3, correctAnswers: 2 }),
-      milestone('Practitioner', { contents: 10, correctAnswers: 8 }),
-      milestone('Specialist', { contents: 25, correctAnswers: 20 }),
-      milestone('Authority', { contents: 50, correctAnswers: 40 }),
-      milestone('Master', { contents: 100, correctAnswers: 80 }),
+      milestone('Initiate', { casts: 3, correctAnswers: 2 }),
+      milestone('Practitioner', { casts: 10, correctAnswers: 8 }),
+      milestone('Specialist', { casts: 25, correctAnswers: 20 }),
+      milestone('Authority', { casts: 50, correctAnswers: 40 }),
+      milestone('Master', { casts: 100, correctAnswers: 80 }),
     ],
   },
   {
@@ -161,10 +161,10 @@ const catalog = () =>
 
 // ---------------------------------------------------------------- Stats
 
-const EMPTY_FIELD = { contents: 0, correctAnswers: 0, papers: 0 };
+const EMPTY_FIELD = { casts: 0, correctAnswers: 0, papers: 0 };
 
 const ensureStats = (learning) => {
-  if (!learning.stats) learning.stats = { contents: 0, correctAnswers: 0, papers: 0, fields: [] };
+  if (!learning.stats) learning.stats = { casts: 0, correctAnswers: 0, papers: 0, fields: [] };
   if (!learning.stats.fields) learning.stats.fields = [];
   return learning.stats;
 };
@@ -177,14 +177,14 @@ const fieldStats = (learning) => {
     const current = merged.get(entry.field) || { field: entry.field, ...EMPTY_FIELD };
     merged.set(entry.field, {
       field: entry.field,
-      contents: current.contents + (entry.contents || 0),
+      casts: current.casts + (entry.casts || 0),
       correctAnswers: current.correctAnswers + (entry.correctAnswers || 0),
       papers: current.papers + (entry.papers || 0),
     });
   });
   return [...merged.values()].sort(
     (a, b) =>
-      b.contents - a.contents ||
+      b.casts - a.casts ||
       b.correctAnswers - a.correctAnswers ||
       b.papers - a.papers ||
       a.field.localeCompare(b.field)
@@ -193,7 +193,7 @@ const fieldStats = (learning) => {
 
 const exploredFields = (learning) =>
   fieldStats(learning)
-    .filter((entry) => entry.contents > 0 || entry.papers > 0)
+    .filter((entry) => entry.casts > 0 || entry.papers > 0)
     .map((entry) => entry.field);
 
 const addFieldStat = (learning, field, stat, amount = 1) => {
@@ -226,15 +226,15 @@ const pathMetrics = (learning, path) => {
     const focusField = focusFieldOf(learning, path);
     const focus = fieldStats(learning).find((entry) => entry.field === focusField) || EMPTY_FIELD;
     return {
-      contents: focus.contents,
+      casts: focus.casts,
       correctAnswers: focus.correctAnswers,
       papers: focus.papers,
-      fields: focus.contents > 0 || focus.papers > 0 ? 1 : 0,
+      fields: focus.casts > 0 || focus.papers > 0 ? 1 : 0,
     };
   }
   const stats = learning?.stats || {};
   return {
-    contents: stats.contents || 0,
+    casts: stats.casts || 0,
     correctAnswers: stats.correctAnswers || 0,
     papers: stats.papers || 0,
     fields: exploredFields(learning).length,
@@ -345,7 +345,7 @@ const defaultFocusField = (preferences, learning) => {
     .filter((pref) => isField(pref.field))
     .sort((a, b) => b.weight - a.weight || a.index - b.index);
   if (ranked.length > 0) return ranked[0].field;
-  return fieldStats(learning).find((entry) => entry.contents > 0)?.field || null;
+  return fieldStats(learning).find((entry) => entry.casts > 0)?.field || null;
 };
 
 /** Switches to `path` (the previous one goes to the history). Returns false when nothing changed. */
@@ -385,7 +385,7 @@ const serializeLearning = (learning) => {
     focusField: path ? focusFieldOf(learning, path) : null,
     startedAt: path ? learning.startedAt || null : null,
     stats: {
-      contents: stats.contents || 0,
+      casts: stats.casts || 0,
       correctAnswers: stats.correctAnswers || 0,
       papers: stats.papers || 0,
       fieldsExplored: exploredFields(learning).length,
@@ -424,8 +424,8 @@ const legacyTracking = (learning) => {
     progress,
     target,
     history: fieldStats(learning)
-      .filter((entry) => entry.contents > 0)
-      .map((entry) => ({ category: entry.field, count: entry.contents })),
+      .filter((entry) => entry.casts > 0)
+      .map((entry) => ({ category: entry.field, count: entry.casts })),
   };
 };
 

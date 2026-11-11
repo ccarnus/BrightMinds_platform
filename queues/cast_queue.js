@@ -6,7 +6,7 @@ const { runAIJob } = require('../services/ai_pipeline');
 const castQueue = createQueue('castQueue');
 
 /** @param {{ data: { castId: string } }} job (older jobs may carry extra fields; they are ignored) */
-const processCastJob = (job) => runAIJob('cast', job);
+const processCastJob = (job) => runAIJob(job);
 
 const startCastWorker = () => castQueue.process(processCastJob);
 

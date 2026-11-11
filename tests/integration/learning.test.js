@@ -2,7 +2,7 @@ const request = require('supertest');
 const app = require('../../app');
 const User = require('../../models/user_model');
 const { useTestDatabase } = require('../helpers/db');
-const { createUser, createCast, createArticle } = require('../helpers/fixtures');
+const { createUser, createCast } = require('../helpers/fixtures');
 const { migrateLearningProfiles } = require('../../services/learning_migration');
 
 useTestDatabase();
@@ -25,7 +25,7 @@ describe('GET /learning/paths', () => {
       title: 'Wanderer',
       goals: [
         { metric: 'fields', label: 'Fields explored', target: 2 },
-        { metric: 'contents', label: 'Casts & articles', target: 3 },
+        { metric: 'casts', label: 'Casts', target: 3 },
       ],
     });
   });
@@ -40,7 +40,7 @@ describe('GET / PUT /user/:id/learning', () => {
       focusField: null,
       journey: null,
       history: [],
-      stats: { contents: 0, correctAnswers: 0, papers: 0, fieldsExplored: 0, fields: [] },
+      stats: { casts: 0, correctAnswers: 0, papers: 0, fieldsExplored: 0, fields: [] },
     });
   });
 
@@ -77,11 +77,11 @@ describe('GET / PUT /user/:id/learning', () => {
         path: 'follower',
         startedAt: new Date('2026-01-01'),
         stats: {
-          contents: 6,
+          casts: 6,
           correctAnswers: 2,
           fields: [
-            { field: 'Chemistry', contents: 4, correctAnswers: 2 },
-            { field: 'Medicine', contents: 2 },
+            { field: 'Chemistry', casts: 4, correctAnswers: 2 },
+            { field: 'Medicine', casts: 2 },
           ],
         },
       },
@@ -97,7 +97,7 @@ describe('GET / PUT /user/:id/learning', () => {
     expect(body.learning.history).toEqual([
       expect.objectContaining({ path: 'follower', title: 'Follower', milestonesReached: 0 }),
     ]);
-    expect(body.learning.stats).toMatchObject({ contents: 6, fieldsExplored: 2 });
+    expect(body.learning.stats).toMatchObject({ casts: 6, fieldsExplored: 2 });
   });
 
   test('validates the path, the focus field and the user', async () => {
@@ -117,30 +117,30 @@ describe('GET / PUT /user/:id/learning', () => {
     await request(app)
       .put(`/user/${user._id}`)
       .send({
-        learning: { path: 'researcher', stats: { contents: 999 } },
+        learning: { path: 'researcher', stats: { casts: 999 } },
         tracking: { progress: 99 },
       })
       .expect(200);
     const saved = await User.findById(user._id).lean();
     expect(saved.learning.path).toBeUndefined();
-    expect(saved.learning.stats.contents).toBe(0);
+    expect(saved.learning.stats.casts).toBe(0);
     expect(saved.tracking).toBeUndefined();
   });
 });
 
 describe('activity', () => {
-  test('watching content can reach a milestone', async () => {
+  test('watching casts can reach a milestone', async () => {
     const user = await createUser({ learning: { path: 'explorer' } });
-    const contents = await Promise.all([
+    const casts = await Promise.all([
       createCast({ department: 'Chemistry' }),
       createCast({ department: 'Medicine' }),
-      createArticle({ department: 'Medicine' }),
+      createCast({ department: 'Medicine' }),
     ]);
     const responses = [];
-    for (const [index, content] of contents.entries()) {
+    for (const cast of casts) {
       const res = await request(app)
         .post(`/user/add/content/${user._id}`)
-        .send({ contentId: content._id, type: index < 2 ? 'cast' : 'article' })
+        .send({ contentId: cast._id })
         .expect(200);
       responses.push(res.body.newMilestones);
     }
@@ -198,11 +198,10 @@ describe('activity', () => {
       learning: {
         path: 'deep_learner',
         focusField: 'Chemistry',
-        stats: { contents: 3, fields: [{ field: 'Chemistry', contents: 3 }] },
+        stats: { casts: 3, fields: [{ field: 'Chemistry', casts: 3 }] },
       },
       evaluation_list: casts.map((cast) => ({
         contentid: cast._id.toString(),
-        type: 'cast',
         watched: true,
         answered: false,
       })),
@@ -234,7 +233,7 @@ describe('path-aware suggestions', () => {
     await createCast({ title: 'math', department: 'Mathematics', rating: { value: 6 } });
     const user = await createUser({
       preferences: [{ category: 'Chemistry', weight: 100, count: 1 }],
-      learning: { path: 'explorer', stats: { fields: [{ field: 'Chemistry', contents: 2 }] } },
+      learning: { path: 'explorer', stats: { fields: [{ field: 'Chemistry', casts: 2 }] } },
     });
     expect(await suggestions(user)).toEqual(['energy-top', 'math', 'energy-low', 'chem']);
 
@@ -283,7 +282,7 @@ describe('migration from the legacy tracking field', () => {
 
   test('converts tracking into a learning profile, once', async () => {
     const chem = await createCast({ department: 'Chemistry' });
-    const article = await createArticle({ department: 'Medicine' });
+    const medicine = await createCast({ department: 'Medicine' });
     const deepId = await insertLegacyUser({
       tracking: {
         objective: 'DeepLearner',
@@ -296,10 +295,10 @@ describe('migration from the legacy tracking field', () => {
       },
       preferences: [{ category: 'Chemistry', weight: 100, count: 1 }],
       evaluation_list: [
-        { contentid: chem._id.toString(), type: 'cast', watched: true, answered: true },
-        { contentid: article._id.toString(), watched: true, answered: true },
-        { contentid: 'deleted', type: 'cast', watched: true, answered: true },
-        { contentid: chem._id.toString(), type: 'cast', watched: true, answered: false },
+        { contentid: chem._id.toString(), watched: true, answered: true },
+        { contentid: medicine._id.toString(), watched: true, answered: true },
+        { contentid: 'deleted', watched: true, answered: true },
+        { contentid: chem._id.toString(), watched: true, answered: false },
       ],
     });
     const careerId = await insertLegacyUser({ tracking: { objective: 'Career', history: [] } });
@@ -315,13 +314,13 @@ describe('migration from the legacy tracking field', () => {
       path: 'deep_learner',
       focusField: 'Chemistry',
       startedAt: now,
-      stats: { contents: 5, correctAnswers: 3, papers: 0 },
+      stats: { casts: 5, correctAnswers: 3, papers: 0 },
     });
     expect(deep.learning.stats.fields).toEqual([
-      { field: 'Chemistry', contents: 4, correctAnswers: 1, papers: 0 },
-      { field: 'Medicine', contents: 1, correctAnswers: 1, papers: 0 },
+      { field: 'Chemistry', casts: 4, correctAnswers: 1, papers: 0 },
+      { field: 'Medicine', casts: 1, correctAnswers: 1, papers: 0 },
     ]);
-    // 4 contents in Chemistry but 1 correct answer: Initiate (3 + 2) is not reached yet.
+    // 4 casts in Chemistry but 1 correct answer: Initiate (3 + 2) is not reached yet.
     expect(deep.learning.milestones).toEqual([]);
 
     const career = await User.collection.findOne({ _id: careerId });
@@ -330,7 +329,7 @@ describe('migration from the legacy tracking field', () => {
     // Migrated accounts work with the API.
     const { body } = await request(app).get(`/user/${deepId}/learning`).expect(200);
     expect(body.journey.next.goals).toEqual([
-      expect.objectContaining({ metric: 'contents', current: 4, target: 3 }),
+      expect.objectContaining({ metric: 'casts', current: 4, target: 3 }),
       expect.objectContaining({ metric: 'correctAnswers', current: 1, target: 2 }),
     ]);
   });

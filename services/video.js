@@ -15,7 +15,7 @@ const getVideoDurationInSeconds = (videoFilePath) =>
     });
   });
 
-/** Durations are stored in minutes (same unit as articles). */
+/** Durations are stored in minutes. */
 const getVideoDurationInMinutes = async (videoFilePath) =>
   (await getVideoDurationInSeconds(videoFilePath)) / 60;
 

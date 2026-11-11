@@ -5,9 +5,9 @@ const app = require('./app');
 const { scheduleWeeklyImpactUpdate } = require('./services/topic_indicator_computor');
 const { scheduleDailyAIRetry } = require('./services/ai_retry');
 const { migrateLearningProfiles } = require('./services/learning_migration');
+const { migrateToCastOnly } = require('./services/cast_only_migration');
 const { backfillCastThumbnails } = require('./services/thumbnail_backfill');
 const { castQueue, startCastWorker } = require('./queues/cast_queue');
-const { articleQueue, startArticleWorker } = require('./queues/article_queue');
 
 const start = async () => {
   config.validate();
@@ -25,13 +25,22 @@ const start = async () => {
   } catch (error) {
     console.error('Learning profile migration failed:', error);
   }
+  try {
+    const result = await migrateToCastOnly();
+    const changed =
+      result.users.references + result.users.stats + result.topics.deleted + result.topics.updated;
+    if (changed > 0 || result.articlesCollection === 'dropped') {
+      console.log('Removed article data:', JSON.stringify(result));
+    }
+  } catch (error) {
+    console.error('Article data cleanup failed:', error);
+  }
 
   startCastWorker();
-  startArticleWorker();
   const impactTask = scheduleWeeklyImpactUpdate();
   const retryTask = scheduleDailyAIRetry();
   if (!config.openai.apiKey) {
-    console.warn('OPENAI_API_KEY is not set: new content stays unprocessed until it is.');
+    console.warn('OPENAI_API_KEY is not set: new casts stay unprocessed until it is.');
   }
 
   const server = app.listen(config.port, () => {
@@ -53,7 +62,7 @@ const start = async () => {
     server.close();
     impactTask?.stop();
     retryTask?.stop();
-    await Promise.allSettled([castQueue.close(), articleQueue.close()]);
+    await Promise.allSettled([castQueue.close()]);
     await mongoose.disconnect();
     process.exit(0);
   };

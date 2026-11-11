@@ -23,7 +23,6 @@ jest.mock('openai', () => {
 const axios = require('axios');
 const OpenAI = require('openai');
 const config = require('../../config');
-const Article = require('../../models/article_model');
 const Cast = require('../../models/cast_model');
 const Topic = require('../../models/topic_model');
 const transcribeVideo = require('../../services/transcription');
@@ -31,17 +30,10 @@ const { sendMail } = require('../../services/mailer');
 const { resumeOpenAI } = require('../../services/openai');
 const { topicsCache } = require('../../services/generate_topic');
 const { resetAlertThrottle } = require('../../services/openai_alerts');
-const { enqueueRetries } = require('../../services/ai_retry');
+const { enqueueRetries, getAIStatus } = require('../../services/ai_retry');
 const { castQueue, processCastJob } = require('../../queues/cast_queue');
-const { processArticleJob } = require('../../queues/article_queue');
 const { useTestDatabase } = require('../helpers/db');
-const {
-  MEDIA_DIRS,
-  createArticle,
-  createCast,
-  createMediaFile,
-  mediaFileExists,
-} = require('../helpers/fixtures');
+const { MEDIA_DIRS, createCast, createMediaFile, mediaFileExists } = require('../helpers/fixtures');
 
 useTestDatabase();
 
@@ -78,6 +70,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(console, 'error').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
+  jest.spyOn(console, 'log').mockImplementation(() => {});
   castQueue.jobs.length = 0;
   axios.get.mockResolvedValue({
     data: {
@@ -106,140 +99,8 @@ afterEach(() => {
   config.mail.password = undefined;
 });
 
-const pendingArticle = () =>
-  createArticle({
-    department: 'Pending Department',
-    topic: 'Pending Topic',
-    articleimageurl: undefined,
-  });
-
-describe('article pipeline', () => {
-  test('generates question, department and topic, but never an image', async () => {
-    const article = await pendingArticle();
-
-    await processArticleJob(job({ articleId: article._id.toString() }));
-
-    const updated = await Article.findById(article._id);
-    expect(updated.evaluation.question).toBe(ANALYSIS.question);
-    expect(updated.evaluation.correct).toBe(ANALYSIS.correct_answer);
-    expect([...updated.evaluation.responses].sort()).toEqual(
-      [ANALYSIS.correct_answer, ...ANALYSIS.distractors].sort()
-    );
-    expect(updated.department).toBe('Chemistry');
-    expect(updated.topic).toBe('Metal Ions in Biology');
-    expect(updated.processing.status).toBe('done');
-    expect(updated.articleimageurl).toBeUndefined();
-    expect(client.images.generate).not.toHaveBeenCalled();
-    const topic = await Topic.findOne({
-      name: 'Metal Ions in Biology',
-      departmentName: 'Chemistry',
-    });
-    expect(topic.openalexID).toBe('T11');
-    expect(topic.articleIDs.map(String)).toEqual([article._id.toString()]);
-
-    const analysisCall = client.chat.completions.create.mock.calls[0][0];
-    expect(analysisCall).toMatchObject({
-      model: config.openai.chatModel,
-      reasoning_effort: config.openai.reasoningEffort,
-      response_format: { type: 'json_schema', json_schema: { strict: true } },
-    });
-    expect(analysisCall.messages[1].content).toContain(article.title);
-    expect(analysisCall.response_format.json_schema.schema.required).not.toContain('image_brief');
-  });
-
-  test('a bad API key alerts once, pauses OpenAI calls and leaves the item pending', async () => {
-    client.chat.completions.create.mockRejectedValue(apiError(401, 'invalid_api_key'));
-    const [first, second] = [await pendingArticle(), await pendingArticle()];
-
-    const firstJob = job({ articleId: first._id.toString() });
-    await expect(processArticleJob(firstJob)).rejects.toMatchObject({ kind: 'config' });
-    await expect(processArticleJob(job({ articleId: second._id.toString() }))).rejects.toThrow(
-      'paused'
-    );
-
-    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
-    expect(firstJob.discard).toHaveBeenCalled(); // no Bull retries: the daily retry handles it
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    expect(sendMail.mock.calls[0][0].subject).toContain('configuration');
-    const stored = await Article.findById(first._id);
-    expect(stored.processing).toMatchObject({ status: 'pending', attempts: 0 });
-    expect(stored.processing.lastError).toContain('HTTP 401');
-  });
-
-  test('a missing API key fails without calling OpenAI', async () => {
-    config.openai.apiKey = undefined;
-    const article = await pendingArticle();
-    await expect(
-      processArticleJob(job({ articleId: article._id.toString() }))
-    ).rejects.toMatchObject({ kind: 'config' });
-    expect(client.chat.completions.create).not.toHaveBeenCalled();
-  });
-
-  test('network errors are left to Bull retries, with an alert on the last one', async () => {
-    client.chat.completions.create.mockRejectedValue(
-      new OpenAI.APIConnectionError({ message: 'Connection error.' })
-    );
-    const article = await pendingArticle();
-    const id = article._id.toString();
-
-    const early = job({ articleId: id }, 0);
-    await expect(processArticleJob(early)).rejects.toMatchObject({ kind: 'transient' });
-    expect(early.discard).not.toHaveBeenCalled();
-    expect(sendMail).not.toHaveBeenCalled();
-
-    await expect(processArticleJob(job({ articleId: id }, 3))).rejects.toThrow();
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    expect((await Article.findById(id)).processing).toMatchObject({
-      status: 'pending',
-      attempts: 0,
-    });
-  });
-
-  test('keeps partial progress and gives up after repeated content errors', async () => {
-    client.chat.completions.create.mockImplementation(async ({ response_format: format }) => {
-      if (format.json_schema.name === 'topic_choice') throw apiError(400, 'moderation_blocked');
-      return chatReply(ANALYSIS);
-    });
-    const article = await pendingArticle();
-    const id = article._id.toString();
-
-    await expect(processArticleJob(job({ articleId: id }))).rejects.toMatchObject({
-      kind: 'content',
-    });
-    let stored = await Article.findById(id);
-    expect(stored.evaluation.question).toBe(ANALYSIS.question); // saved before the topic step
-    expect(stored.department).toBe('Chemistry');
-    expect(stored.topic).toBe('Pending Topic');
-    expect(stored.processing).toMatchObject({ status: 'pending', attempts: 1 });
-
-    await expect(processArticleJob(job({ articleId: id }))).rejects.toThrow();
-    stored = await Article.findById(id);
-    expect(stored.processing).toMatchObject({ status: 'failed', attempts: 2 });
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    expect(sendMail.mock.calls[0][0].text).toContain(stored.title);
-  });
-
-  test('a retry only runs the missing steps', async () => {
-    const article = await createArticle(); // has topic & department, no question yet
-
-    await processArticleJob(job({ articleId: article._id.toString() }));
-
-    const updated = await Article.findById(article._id);
-    expect(updated.evaluation.question).toBe(ANALYSIS.question);
-    expect(axios.get).not.toHaveBeenCalled(); // topic already set: no OpenAlex/topic call
-    expect(client.chat.completions.create).toHaveBeenCalledTimes(1); // the question only
-
-    // Nothing left to do: no OpenAI call at all (a missing image is not an AI output).
-    client.chat.completions.create.mockClear();
-    const complete = await createArticle({
-      articleimageurl: undefined,
-      evaluation: { question: 'Existing?', responses: ['a', 'b'], correct: 'a' },
-    });
-    await processArticleJob(job({ articleId: complete._id.toString() }));
-    expect(client.chat.completions.create).not.toHaveBeenCalled();
-    expect((await Article.findById(complete._id)).processing.status).toBe('done');
-  });
-});
+/** A cast with a transcript but no question, department or topic yet. */
+const pendingCast = () => createCast({ department: 'Pending Department', topic: 'Pending Topic' });
 
 describe('cast pipeline', () => {
   test('transcribes the video with its title as context, then runs the other steps', async () => {
@@ -263,6 +124,41 @@ describe('cast pipeline', () => {
     expect(updated.processing.status).toBe('done');
   });
 
+  test('generates question, department and topic, but never an image', async () => {
+    const cast = await pendingCast();
+
+    await processCastJob(job({ castId: cast._id.toString() }));
+
+    const updated = await Cast.findById(cast._id);
+    expect(updated.evaluation.question).toBe(ANALYSIS.question);
+    expect(updated.evaluation.correct).toBe(ANALYSIS.correct_answer);
+    expect([...updated.evaluation.responses].sort()).toEqual(
+      [ANALYSIS.correct_answer, ...ANALYSIS.distractors].sort()
+    );
+    expect(updated.department).toBe('Chemistry');
+    expect(updated.topic).toBe('Metal Ions in Biology');
+    expect(updated.processing.status).toBe('done');
+    expect(updated.castimageurl).toBeUndefined();
+    expect(client.images.generate).not.toHaveBeenCalled();
+    const topic = await Topic.findOne({
+      name: 'Metal Ions in Biology',
+      departmentName: 'Chemistry',
+    });
+    expect(topic.openalexID).toBe('T11');
+    expect(topic.castIDs.map(String)).toEqual([cast._id.toString()]);
+    expect(topic.castCount).toBe(1);
+
+    const analysisCall = client.chat.completions.create.mock.calls[0][0];
+    expect(analysisCall).toMatchObject({
+      model: config.openai.chatModel,
+      reasoning_effort: config.openai.reasoningEffort,
+      response_format: { type: 'json_schema', json_schema: { strict: true } },
+    });
+    expect(analysisCall.messages[1].content).toContain(cast.title);
+    expect(analysisCall.messages[1].content).toContain('research talk');
+    expect(analysisCall.response_format.json_schema.schema.required).not.toContain('image_brief');
+  });
+
   test('a missing video is a content error', async () => {
     const cast = await createCast({ description: '' });
     await expect(processCastJob(job({ castId: cast._id.toString() }))).rejects.toMatchObject({
@@ -270,6 +166,94 @@ describe('cast pipeline', () => {
     });
     expect(transcribeVideo).not.toHaveBeenCalled();
     expect((await Cast.findById(cast._id)).processing.attempts).toBe(1);
+  });
+
+  test('a bad API key alerts once, pauses OpenAI calls and leaves the cast pending', async () => {
+    client.chat.completions.create.mockRejectedValue(apiError(401, 'invalid_api_key'));
+    const [first, second] = [await pendingCast(), await pendingCast()];
+
+    const firstJob = job({ castId: first._id.toString() });
+    await expect(processCastJob(firstJob)).rejects.toMatchObject({ kind: 'config' });
+    await expect(processCastJob(job({ castId: second._id.toString() }))).rejects.toThrow('paused');
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(firstJob.discard).toHaveBeenCalled(); // no Bull retries: the daily retry handles it
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0][0].subject).toContain('configuration');
+    const stored = await Cast.findById(first._id);
+    expect(stored.processing).toMatchObject({ status: 'pending', attempts: 0 });
+    expect(stored.processing.lastError).toContain('HTTP 401');
+  });
+
+  test('a missing API key fails without calling OpenAI', async () => {
+    config.openai.apiKey = undefined;
+    const cast = await pendingCast();
+    await expect(processCastJob(job({ castId: cast._id.toString() }))).rejects.toMatchObject({
+      kind: 'config',
+    });
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  test('network errors are left to Bull retries, with an alert on the last one', async () => {
+    client.chat.completions.create.mockRejectedValue(
+      new OpenAI.APIConnectionError({ message: 'Connection error.' })
+    );
+    const cast = await pendingCast();
+    const castId = cast._id.toString();
+
+    const early = job({ castId }, 0);
+    await expect(processCastJob(early)).rejects.toMatchObject({ kind: 'transient' });
+    expect(early.discard).not.toHaveBeenCalled();
+    expect(sendMail).not.toHaveBeenCalled();
+
+    await expect(processCastJob(job({ castId }, 3))).rejects.toThrow();
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect((await Cast.findById(castId)).processing).toMatchObject({
+      status: 'pending',
+      attempts: 0,
+    });
+  });
+
+  test('keeps partial progress and gives up after repeated content errors', async () => {
+    client.chat.completions.create.mockImplementation(async ({ response_format: format }) => {
+      if (format.json_schema.name === 'topic_choice') throw apiError(400, 'moderation_blocked');
+      return chatReply(ANALYSIS);
+    });
+    const cast = await pendingCast();
+    const castId = cast._id.toString();
+
+    await expect(processCastJob(job({ castId }))).rejects.toMatchObject({ kind: 'content' });
+    let stored = await Cast.findById(castId);
+    expect(stored.evaluation.question).toBe(ANALYSIS.question); // saved before the topic step
+    expect(stored.department).toBe('Chemistry');
+    expect(stored.topic).toBe('Pending Topic');
+    expect(stored.processing).toMatchObject({ status: 'pending', attempts: 1 });
+
+    await expect(processCastJob(job({ castId }))).rejects.toThrow();
+    stored = await Cast.findById(castId);
+    expect(stored.processing).toMatchObject({ status: 'failed', attempts: 2 });
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0][0].text).toContain(stored.title);
+  });
+
+  test('a retry only runs the missing steps', async () => {
+    const cast = await createCast(); // has transcript, topic & department, no question yet
+
+    await processCastJob(job({ castId: cast._id.toString() }));
+
+    const updated = await Cast.findById(cast._id);
+    expect(updated.evaluation.question).toBe(ANALYSIS.question);
+    expect(axios.get).not.toHaveBeenCalled(); // topic already set: no OpenAlex/topic call
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1); // the question only
+
+    // Nothing left to do: no OpenAI call at all (a missing image is not an AI output).
+    client.chat.completions.create.mockClear();
+    const complete = await createCast({
+      evaluation: { question: 'Existing?', responses: ['a', 'b'], correct: 'a' },
+    });
+    await processCastJob(job({ castId: complete._id.toString() }));
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+    expect((await Cast.findById(complete._id)).processing.status).toBe('done');
   });
 });
 
@@ -279,7 +263,7 @@ describe('daily retry', () => {
     evaluation: { question: 'Q?', responses: ['a', 'b'], correct: 'a' },
   };
 
-  test('queues unprocessed content, skipping failed and in-progress items', async () => {
+  test('queues unprocessed casts, skipping failed and in-progress ones', async () => {
     const done = await createCast(complete);
     const pending = await createCast();
     const failed = await createCast({ processing: { status: 'failed', attempts: 2 } });
@@ -290,7 +274,7 @@ describe('daily retry', () => {
       processing: { status: 'processing', lastAttemptAt: new Date(Date.now() - 3 * 3600e3) },
     });
 
-    await expect(enqueueRetries()).resolves.toEqual({ cast: 2, article: 0 });
+    await expect(enqueueRetries()).resolves.toBe(2);
     const queued = castQueue.jobs.map((data) => data.castId);
     expect(queued.sort()).toEqual([pending._id.toString(), stale._id.toString()].sort());
     expect(queued).not.toContain(done._id.toString());
@@ -298,9 +282,9 @@ describe('daily retry', () => {
     expect(queued).not.toContain(busy._id.toString());
   });
 
-  test('--failed resets items that gave up', async () => {
+  test('--failed resets casts that gave up', async () => {
     const failed = await createCast({ processing: { status: 'failed', attempts: 2 } });
-    await expect(enqueueRetries({ includeFailed: true })).resolves.toEqual({ cast: 1, article: 0 });
+    await expect(enqueueRetries({ includeFailed: true })).resolves.toBe(1);
     expect((await Cast.findById(failed._id)).processing).toMatchObject({
       status: 'pending',
       attempts: 0,
@@ -310,8 +294,18 @@ describe('daily retry', () => {
   test('does nothing but alert while no API key is configured', async () => {
     config.openai.apiKey = undefined;
     await createCast();
-    await expect(enqueueRetries()).resolves.toEqual({ cast: 0, article: 0 });
+    await expect(enqueueRetries()).resolves.toBe(0);
     expect(castQueue.jobs).toHaveLength(0);
     expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  test('status lists the casts still missing AI outputs', async () => {
+    await createCast(complete);
+    const pending = await createCast({ processing: { status: 'failed', attempts: 2 } });
+    const status = await getAIStatus();
+    expect(status.total).toBe(2);
+    expect(status.unprocessed).toEqual([
+      expect.objectContaining({ id: pending._id.toString(), status: 'failed', attempts: 2 }),
+    ]);
   });
 });

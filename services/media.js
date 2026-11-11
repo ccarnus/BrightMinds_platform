@@ -7,7 +7,6 @@ const MEDIA_DIRS = Object.freeze({
   castVideos: 'cast_videos',
   castImages: 'cast_images',
   castSubtitles: 'cast_subtitles',
-  articleImages: 'article_images',
   profilePictures: 'profile_pictures',
   universityIcons: 'university_icon',
   virtualLabIcons: 'virtuallab_icon',

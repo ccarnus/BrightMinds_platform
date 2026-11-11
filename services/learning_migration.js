@@ -2,11 +2,8 @@
 // Runs at server start and is idempotent: only accounts without `learning.version` are migrated.
 const User = require('../models/user_model');
 const Cast = require('../models/cast_model');
-const Article = require('../models/article_model');
 const learning = require('./learning');
 const { isValidObjectId } = require('../utils/http');
-
-const CONTENT_MODELS = { cast: Cast, article: Article };
 
 /**
  * Correct answers per department. The legacy app marked only correctly answered content as
@@ -14,20 +11,12 @@ const CONTENT_MODELS = { cast: Cast, article: Article };
  */
 const correctAnswersByField = async (answered) => {
   const counts = new Map();
-  await Promise.all(
-    Object.entries(CONTENT_MODELS).map(async ([type, Model]) => {
-      // Old items may have no type: look them up in both collections.
-      const ids = answered
-        .filter((item) => !item.type || item.type === type)
-        .map((item) => item.contentid)
-        .filter(isValidObjectId);
-      if (ids.length === 0) return;
-      const docs = await Model.find({ _id: { $in: ids } })
-        .select('department')
-        .lean();
-      docs.forEach((doc) => counts.set(doc.department, (counts.get(doc.department) || 0) + 1));
-    })
-  );
+  const ids = answered.map((item) => item.contentid).filter(isValidObjectId);
+  if (ids.length === 0) return counts;
+  const casts = await Cast.find({ _id: { $in: ids } })
+    .select('department')
+    .lean();
+  casts.forEach((cast) => counts.set(cast.department, (counts.get(cast.department) || 0) + 1));
   return counts;
 };
 
@@ -36,11 +25,11 @@ const buildLearning = async (doc, now) => {
   const tracking = doc.tracking || {};
   const fields = new Map();
   const fieldEntry = (field) => {
-    if (!fields.has(field)) fields.set(field, { field, contents: 0, correctAnswers: 0, papers: 0 });
+    if (!fields.has(field)) fields.set(field, { field, casts: 0, correctAnswers: 0, papers: 0 });
     return fields.get(field);
   };
   (tracking.history || []).forEach(({ category, count }) => {
-    if (category) fieldEntry(category).contents += count || 0;
+    if (category) fieldEntry(category).casts += count || 0;
   });
   const answered = (doc.evaluation_list || []).filter((item) => item?.answered);
   (await correctAnswersByField(answered)).forEach((count, field) => {
@@ -48,7 +37,7 @@ const buildLearning = async (doc, now) => {
   });
 
   const stats = {
-    contents: [...fields.values()].reduce((sum, entry) => sum + entry.contents, 0),
+    casts: [...fields.values()].reduce((sum, entry) => sum + entry.casts, 0),
     correctAnswers: Math.max(answered.length, tracking.progress || 0),
     papers: 0,
     fields: [...fields.values()],

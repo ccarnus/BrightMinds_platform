@@ -1,12 +1,10 @@
-// Generative-AI processing of casts and articles, run by the cast/article queues.
+// Generative-AI processing of casts, run by the cast queue.
 // Steps only run when their output is missing and are saved as soon as they succeed, so a job can
 // be retried (by Bull, the daily retry or `node scripts/ai.js retry`) and resumes where it stopped:
-//   1. transcript + subtitles (casts)   2. question, department   3. topic
-// Images are never generated: casts show a frame of their video (services/thumbnail.js), articles
-// the cover uploaded by their author.
+//   1. transcript + subtitles   2. question, department   3. topic
+// Images are never generated: a cast shows a frame of its video (services/thumbnail.js).
 const fs = require('fs');
 const config = require('../config');
-const Article = require('../models/article_model');
 const Cast = require('../models/cast_model');
 const { analyzeContent } = require('./analyze_content');
 const { chooseTopic } = require('./generate_topic');
@@ -22,22 +20,17 @@ const {
   mediaUrl,
 } = require('./media');
 
-const CONTENT_TYPES = {
-  cast: { Model: Cast, idField: 'castId' },
-  article: { Model: Article, idField: 'articleId' },
-};
-
 const isEmpty = { $in: [null, ''] };
 
-/** Mongo filter matching content of `type` that still lacks at least one AI output. */
-const missingOutputsFilter = (type) => ({
+/** Mongo filter matching casts that still lack at least one AI output. */
+const MISSING_OUTPUTS_FILTER = {
   $or: [
-    ...(type === 'cast' ? [{ description: isEmpty }] : []),
+    { description: isEmpty },
     { 'evaluation.question': isEmpty },
     { department: PENDING_DEPARTMENT },
     { topic: PENDING_TOPIC },
   ],
-});
+};
 
 const transcribeCast = async (cast) => {
   const videoPath = mediaPathFromUrl(cast.casturl, MEDIA_DIRS.castVideos);
@@ -58,87 +51,79 @@ const transcribeCast = async (cast) => {
 };
 
 /**
- * Runs the missing AI steps for one cast/article. Re-reads the document after each long step so
- * edits or deletions made meanwhile are respected.
- * @returns {Promise<boolean>} false if the content no longer exists.
+ * Runs the missing AI steps for one cast. Re-reads the document after each long step so edits or
+ * deletions made meanwhile are respected.
+ * @returns {Promise<boolean>} false if the cast no longer exists.
  * @throws {AIError|Error}
  */
-const processContent = async (type, id) => {
-  const { Model } = CONTENT_TYPES[type];
-  const save = (update) => Model.findByIdAndUpdate(id, update, { new: true });
+const processCast = async (id) => {
+  const save = (update) => Cast.findByIdAndUpdate(id, update, { new: true });
 
-  let content = await Model.findById(id);
-  if (!content) return false;
+  let cast = await Cast.findById(id);
+  if (!cast) return false;
 
-  if (type === 'cast' && !content.description) {
-    content = await save(await transcribeCast(content));
-    if (!content) return false;
+  if (!cast.description) {
+    cast = await save(await transcribeCast(cast));
+    if (!cast) return false;
   }
 
-  const needsDepartment = !content.department || content.department === PENDING_DEPARTMENT;
-  const needsEvaluation = !content.evaluation?.question;
+  const needsDepartment = !cast.department || cast.department === PENDING_DEPARTMENT;
+  const needsEvaluation = !cast.evaluation?.question;
   if (needsDepartment || needsEvaluation) {
-    const analysis = await analyzeContent({
-      title: content.title,
-      description: content.description,
-      contentType: type,
-    });
+    const analysis = await analyzeContent({ title: cast.title, description: cast.description });
     const update = {};
     if (needsEvaluation) update.evaluation = analysis.evaluation;
     if (needsDepartment) update.department = analysis.department;
     if (Object.keys(update).length) {
-      content = await save(update);
-      if (!content) return false;
+      cast = await save(update);
+      if (!cast) return false;
     }
     // A topic chosen by the author can only be registered once the department is known.
-    if (needsDepartment && content.topic !== PENDING_TOPIC) {
+    if (needsDepartment && cast.topic !== PENDING_TOPIC) {
       await createTopicIfNotExist({
-        name: content.topic,
-        departmentName: content.department,
-        contentId: content._id,
-        contentType: type,
+        name: cast.topic,
+        departmentName: cast.department,
+        castId: cast._id,
       });
     }
   }
 
-  if (content.topic === PENDING_TOPIC) {
+  if (cast.topic === PENDING_TOPIC) {
     const topic = await chooseTopic({
-      title: content.title,
-      description: content.description,
-      department: content.department,
+      title: cast.title,
+      description: cast.description,
+      department: cast.department,
     });
     // Conditional update: keeps a topic the author set while this job was running.
-    const updated = await Model.findOneAndUpdate(
+    const updated = await Cast.findOneAndUpdate(
       { _id: id, topic: PENDING_TOPIC },
       { topic: topic.name },
       { new: true }
     );
     if (updated) {
-      content = updated;
+      cast = updated;
       await createTopicIfNotExist({
         name: topic.name,
-        departmentName: content.department,
+        departmentName: cast.department,
         openalexID: topic.openalexID,
-        contentId: content._id,
-        contentType: type,
+        castId: cast._id,
       });
     }
   }
   return true;
 };
 
-/** Records a failed run on the document; marks it "failed" once content errors reach the limit. */
-const recordFailure = async (type, id, error, { finalAttempt }) => {
-  const { Model } = CONTENT_TYPES[type];
+/** Records a failed run on the cast; marks it "failed" once content errors reach the limit. */
+const recordFailure = async (id, error, { finalAttempt }) => {
   const kind = classifyError(error);
   const message = String(error?.message || error).slice(0, 500);
   const update = { $set: { 'processing.status': 'pending', 'processing.lastError': message } };
   if (kind === 'content' && finalAttempt) update.$inc = { 'processing.attempts': 1 };
 
-  const content = await Model.findByIdAndUpdate(id, update, { new: true });
-  if (!content) return;
-  if (kind === 'content' && content.processing.attempts >= config.ai.maxAttempts) {
-    await Model.updateOne({ _id: id }, { 'processing.status': 'failed' });
+  const cast = await Cast.findByIdAndUpdate(id, update, { new: true });
+  if (!cast) return;
+  if (kind === 'content' && cast.processing.attempts >= config.ai.maxAttempts) {
+    await Cast.updateOne({ _id: id }, { 'processing.status': 'failed' });
     await alertOpenAIProblem(
       {
         kind: 'content',
@@ -147,7 +132,7 @@ const recordFailure = async (type, id, error, { finalAttempt }) => {
         status: error?.status,
         code: error?.code,
       },
-      `Item: ${type} ${id} "${content.title}" (${content.processing.attempts} attempts)`
+      `Item: cast ${id} "${cast.title}" (${cast.processing.attempts} attempts)`
     );
   } else if (kind === 'transient' && finalAttempt) {
     await alertOpenAIProblem({
@@ -161,38 +146,37 @@ const recordFailure = async (type, id, error, { finalAttempt }) => {
 };
 
 /**
- * Bull processor for cast/article jobs. Temporary errors are retried by Bull with backoff;
- * configuration and content errors are not (the daily retry picks the item up again).
+ * Bull processor for cast jobs. Temporary errors are retried by Bull with backoff;
+ * configuration and content errors are not (the daily retry picks the cast up again).
  */
-const runAIJob = async (type, job) => {
-  const { Model, idField } = CONTENT_TYPES[type];
-  const id = job.data[idField];
-  const exists = await Model.findByIdAndUpdate(id, {
+const runAIJob = async (job) => {
+  const id = job.data.castId;
+  const exists = await Cast.findByIdAndUpdate(id, {
     'processing.status': 'processing',
     'processing.lastAttemptAt': new Date(),
   });
   if (!exists) {
-    console.warn(`${type} ${id} no longer exists, skipping AI job.`);
+    console.warn(`cast ${id} no longer exists, skipping AI job.`);
     return;
   }
 
   try {
-    if (await processContent(type, id)) {
-      await Model.updateOne(
+    if (await processCast(id)) {
+      await Cast.updateOne(
         { _id: id },
         { $set: { 'processing.status': 'done' }, $unset: { 'processing.lastError': 1 } }
       );
-      console.log(`AI processing done for ${type} ${id}.`);
+      console.log(`AI processing done for cast ${id}.`);
     }
   } catch (error) {
     const kind = classifyError(error);
     const maxBullAttempts = job.opts?.attempts || 1;
     const finalAttempt = kind !== 'transient' || (job.attemptsMade ?? 0) + 1 >= maxBullAttempts;
     if (kind !== 'transient' && typeof job.discard === 'function') job.discard();
-    console.error(`AI processing failed for ${type} ${id} [${kind}]: ${error.message}`);
-    await recordFailure(type, id, error, { finalAttempt });
+    console.error(`AI processing failed for cast ${id} [${kind}]: ${error.message}`);
+    await recordFailure(id, error, { finalAttempt });
     throw error;
   }
 };
 
-module.exports = { CONTENT_TYPES, missingOutputsFilter, processContent, runAIJob };
+module.exports = { MISSING_OUTPUTS_FILTER, processCast, runAIJob };

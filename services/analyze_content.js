@@ -1,20 +1,20 @@
-// One structured-output call per cast/article producing the multiple-choice question and the
-// department (used when the author didn't pick one).
+// One structured-output call per cast producing the multiple-choice question and the department
+// (used when the author didn't pick one).
 const config = require('../config');
 const { departmentNames } = require('../lists/departments');
 const { AIError, callOpenAI } = require('./openai');
 
-// Long talks/articles are cut (beginning and end are kept: they hold the framing and conclusion).
+// Long talks are cut (beginning and end are kept: they hold the framing and conclusion).
 const MAX_CONTENT_CHARS = 60000;
 
-const SYSTEM_PROMPT = `You create learning material for BrightMinds, a mobile app where people discover research through short talks ("casts") and articles. After going through many pieces of content, users answer one multiple-choice question per piece to check what they understood.
+const SYSTEM_PROMPT = `You create learning material for BrightMinds, a mobile app where people discover research through short talks ("casts"). After going through many casts, users answer one multiple-choice question per cast to check what they understood.
 
 From the content provided, produce:
 
 1. question, correct_answer, distractors: one multiple-choice question.
 - Test the core idea: the main finding, the problem addressed, the approach, or why it matters. Do not test trivia (names, dates, exact figures, word-for-word phrasing) unless it is the central result.
 - It must be answerable by someone who followed the content, without outside knowledge, and only correct_answer may be right according to the content.
-- It must stand alone: users see it later, mixed with questions about other content. Name the subject (e.g. "In research on zinc and bacterial infections, ...") and never refer to "the speaker", "the talk", "this video", "the author" or "the article".
+- It must stand alone: users see it later, mixed with questions about other content. Name the subject (e.g. "In research on zinc and bacterial infections, ...") and never refer to "the speaker", "the talk", "this video" or "the author".
 - Exactly 3 distractors: plausible to someone who did not follow the content, on the same subject, similar to the correct answer in length, grammar and specificity, and clearly wrong according to the content. No "all/none of the above", no jokes, no trick negations.
 - At most 25 words for the question and 12 words per answer. Write in the language of the content.
 
@@ -41,8 +41,8 @@ const truncate = (text) => {
   return `${value.slice(0, half)}\n[...]\n${value.slice(-half)}`;
 };
 
-const buildUserMessage = ({ title, description, contentType }) =>
-  `Content type: ${contentType === 'cast' ? 'research talk (transcript)' : 'article'}\n` +
+const buildUserMessage = ({ title, description }) =>
+  `Content type: research talk (transcript)\n` +
   `Title: ${String(title || '').trim()}\n\n<content>\n${truncate(description)}\n</content>`;
 
 const shuffle = (array) => {
@@ -82,7 +82,7 @@ const MOCK_ANALYSIS = () => ({
 });
 
 /**
- * @param {{ title: string, description: string, contentType: 'cast'|'article' }} content
+ * @param {{ title: string, description: string }} content
  * @returns {Promise<{ evaluation: object, department: string }>}
  * @throws {AIError}
  */

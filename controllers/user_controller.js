@@ -3,14 +3,14 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const User = require('../models/user_model');
 const Cast = require('../models/cast_model');
-const Article = require('../models/article_model');
+const { CARD_PROJECTION } = require('../services/cast');
 const { departmentNames } = require('../lists/departments');
 const isValidEmail = require('../services/email_validator');
 const { sendMail } = require('../services/mailer');
 const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
 const rewardsService = require('../services/rewards');
 const learningService = require('../services/learning');
-const { recordContentConsumed } = require('../services/learning_activity');
+const { recordCastWatched } = require('../services/learning_activity');
 const { signToken } = require('../middleware/auth');
 const {
   messagePage,
@@ -41,28 +41,19 @@ const SELF_EDITABLE_FIELDS = [
   'evaluation_list',
   'preferences',
   'castPublications',
-  'articlePublications',
 ];
 const PUBLIC_LIST_FIELDS =
-  '_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences learning.path learning.focusField learning.stats castPublications articlePublications university isVerified';
+  '_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences learning.path learning.focusField learning.stats castPublications university isVerified';
 // Explorer suggestions from unexplored fields can span the whole catalog.
 const EXPLORER_SUGGESTION_LIMIT = 50;
 const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
-const normalizeContentType = (value) => {
-  const type = value ? String(value).toLowerCase() : null;
-  return type === 'cast' || type === 'article' ? type : null;
-};
-
 const normalizeBoolean = (value) => ['1', 'true', 'yes'].includes(String(value).toLowerCase());
 
-/** Accepts the different payload shapes clients have used for bookmarks. */
-const resolveBookmarkInput = (body = {}) => {
-  const contentId = body.contentId || body.contentid || body.castId || body.articleId || null;
-  let type = normalizeContentType(body.type || body.contentType);
-  if (!type && body.castId) type = 'cast';
-  if (!type && body.articleId) type = 'article';
-  return { contentId: contentId ? String(contentId).trim() : null, type };
+/** Accepts the different payload shapes clients have used for the bookmarked cast id. */
+const resolveBookmarkedCastId = (body = {}) => {
+  const castId = body.contentId || body.contentid || body.castId || null;
+  return castId ? String(castId).trim() : null;
 };
 
 const findUserOr404 = async (id, projection) => {
@@ -336,25 +327,22 @@ exports.resetPassword = htmlRoute(async (req, res) => {
 // ---------------------------------------------------------------- Evaluation list
 
 /**
- * Marks content as watched. The first time, it counts in the learning stats (per department) and
+ * Marks a cast as watched. The first time, it counts in the learning stats (per department) and
  * may reach a milestone of the learning path (`newMilestones`).
  */
 exports.updateUserAddContentToList = async (req, res) => {
   const userId = req.params.id;
   assertObjectId(userId);
-  const { type } = req.body;
   const contentId = String(req.body.contentId);
 
-  const Model = type === 'cast' ? Cast : type === 'article' ? Article : null;
-  if (!Model) throw badRequest('Invalid content type.');
   assertObjectId(contentId, 'contentId');
-  const content = await Model.findById(contentId).select('department');
-  if (!content) throw notFound(`${type === 'cast' ? 'Cast' : 'Article'} not found.`);
+  const cast = await Cast.findById(contentId).select('department');
+  if (!cast) throw notFound('Cast not found.');
   if (!(await User.exists({ _id: userId }))) throw notFound('User not found.');
 
   const existing = await User.updateOne(
     { _id: userId, 'evaluation_list.contentid': contentId },
-    { $set: { 'evaluation_list.$.watched': true, 'evaluation_list.$.type': type } }
+    { $set: { 'evaluation_list.$.watched': true } }
   );
   if (existing.matchedCount > 0) {
     return res.status(200).json({ message: 'Content already in evaluation list.' });
@@ -363,13 +351,13 @@ exports.updateUserAddContentToList = async (req, res) => {
   // The $ne guard protects against concurrent duplicate inserts.
   const added = await User.updateOne(
     { _id: userId, 'evaluation_list.contentid': { $ne: contentId } },
-    { $push: { evaluation_list: { contentid: contentId, type, watched: true, answered: false } } }
+    { $push: { evaluation_list: { contentid: contentId, watched: true, answered: false } } }
   );
   if (added.matchedCount === 0) {
     return res.status(200).json({ message: 'Content already in evaluation list.' });
   }
 
-  const newMilestones = await recordContentConsumed(userId, content.department);
+  const newMilestones = await recordCastWatched(userId, cast.department);
   return res.status(200).json({
     message: 'Content added to evaluation list and history updated.',
     newMilestones,
@@ -398,7 +386,6 @@ exports.markContentAsAnswered = async (req, res) => {
 
 // ---------------------------------------------------------------- Quiz rewards
 
-const CONTENT_MODELS = { cast: Cast, article: Article };
 const EMPTY_QUIZ_SUMMARY = { total: 0, correct: 0, bestCombo: 0, perfect: false };
 const QUIZ_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
@@ -452,23 +439,17 @@ const parseQuizAnswers = (answers) => {
   }, []);
 };
 
-/** Loads the `evaluation` and `department` of evaluation-list items, keyed by content id. */
+/** Loads the `evaluation` and `department` of the casts of evaluation-list items, keyed by cast id. */
 const loadEvaluations = async (items) => {
-  const evaluations = new Map();
-  await Promise.all(
-    Object.entries(CONTENT_MODELS).map(async ([type, Model]) => {
-      const ids = items.filter((item) => item.type === type).map((item) => item.contentid);
-      if (ids.length === 0) return;
-      const docs = await Model.find({ _id: { $in: ids } }).select('evaluation department');
-      docs.forEach((doc) =>
-        evaluations.set(String(doc._id), {
-          evaluation: doc.evaluation,
-          department: doc.department,
-        })
-      );
-    })
+  const ids = items.map((item) => item.contentid);
+  if (ids.length === 0) return new Map();
+  const casts = await Cast.find({ _id: { $in: ids } }).select('evaluation department');
+  return new Map(
+    casts.map((cast) => [
+      String(cast._id),
+      { evaluation: cast.evaluation, department: cast.department },
+    ])
   );
-  return evaluations;
 };
 
 /**
@@ -556,7 +537,7 @@ exports.getUserRewards = async (req, res) => {
 
 // ---------------------------------------------------------------- Bookmarks
 
-/** `?expand=true` embeds the bookmarked cast/article document in each entry. */
+/** `?expand=true` embeds the bookmarked cast document in each entry (`content`, null if deleted). */
 exports.getUserBookmarks = async (req, res) => {
   const user = await findUserOr404(req.params.id, 'bookmarkedcontent');
   const bookmarks = user.toObject().bookmarkedcontent || [];
@@ -564,42 +545,22 @@ exports.getUserBookmarks = async (req, res) => {
     return res.status(200).json(bookmarks);
   }
 
-  const castIds = new Set();
-  const articleIds = new Set();
-  for (const bookmark of bookmarks) {
-    const id = bookmark.contentid ? String(bookmark.contentid).trim() : null;
-    if (!isValidObjectId(id)) continue;
-    const type = normalizeContentType(bookmark.type);
-    // Legacy bookmarks have no type: look them up in both collections.
-    if (type !== 'article') castIds.add(id);
-    if (type !== 'cast') articleIds.add(id);
-  }
-
-  const [casts, articles] = await Promise.all([
-    castIds.size ? Cast.find({ _id: { $in: [...castIds] } }).lean() : [],
-    articleIds.size ? Article.find({ _id: { $in: [...articleIds] } }).lean() : [],
-  ]);
+  const castIds = bookmarks
+    .map((bookmark) => (bookmark.contentid ? String(bookmark.contentid).trim() : null))
+    .filter(isValidObjectId);
+  const casts = castIds.length
+    ? await Cast.find({ _id: { $in: castIds } })
+        .select(CARD_PROJECTION)
+        .lean()
+    : [];
   const castMap = new Map(casts.map((cast) => [String(cast._id), cast]));
-  const articleMap = new Map(articles.map((article) => [String(article._id), article]));
 
   const expanded = bookmarks.map((bookmark) => {
     const contentid = bookmark.contentid ? String(bookmark.contentid).trim() : null;
-    let type = normalizeContentType(bookmark.type);
-    let content = null;
-    if (contentid) {
-      if (type !== 'article' && castMap.has(contentid)) {
-        type = 'cast';
-        content = castMap.get(contentid);
-      } else if (type !== 'cast' && articleMap.has(contentid)) {
-        type = 'article';
-        content = articleMap.get(contentid);
-      }
-    }
     return {
       contentid,
-      type: contentid ? type : null,
       bookmarkedAt: bookmark.bookmarkedAt || null,
-      content,
+      content: castMap.get(contentid) || null,
     };
   });
   return res.status(200).json(expanded);
@@ -608,72 +569,29 @@ exports.getUserBookmarks = async (req, res) => {
 exports.addUserBookmark = async (req, res) => {
   const userId = req.params.id;
   assertObjectId(userId);
-  const rawType = req.body.type || req.body.contentType;
-  if (rawType && !normalizeContentType(rawType)) throw badRequest('Invalid content type.');
-  const { contentId, type } = resolveBookmarkInput(req.body);
+  const contentId = resolveBookmarkedCastId(req.body);
   if (!contentId) throw badRequest('contentId is required.');
   assertObjectId(contentId, 'contentId');
   if (!(await User.exists({ _id: userId }))) throw notFound('User not found.');
-
-  let resolvedType = type;
-  if (!resolvedType) {
-    const [cast, article] = await Promise.all([
-      Cast.exists({ _id: contentId }),
-      Article.exists({ _id: contentId }),
-    ]);
-    if (cast && article) throw badRequest('Content type is required.');
-    if (!cast && !article) throw notFound('Content not found.');
-    resolvedType = cast ? 'cast' : 'article';
-  } else {
-    const Model = resolvedType === 'cast' ? Cast : Article;
-    if (!(await Model.exists({ _id: contentId }))) {
-      throw notFound(`${resolvedType === 'cast' ? 'Cast' : 'Article'} not found.`);
-    }
-  }
+  if (!(await Cast.exists({ _id: contentId }))) throw notFound('Cast not found.');
 
   const added = await User.updateOne(
     { _id: userId, 'bookmarkedcontent.contentid': { $ne: contentId } },
-    {
-      $push: {
-        bookmarkedcontent: { contentid: contentId, type: resolvedType, bookmarkedAt: new Date() },
-      },
-    }
+    { $push: { bookmarkedcontent: { contentid: contentId, bookmarkedAt: new Date() } } }
   );
-  if (added.modifiedCount === 0) {
-    // Backfill the type on legacy bookmarks that were saved without one.
-    await User.updateOne(
-      {
-        _id: userId,
-        bookmarkedcontent: { $elemMatch: { contentid: contentId, type: { $exists: false } } },
-      },
-      { $set: { 'bookmarkedcontent.$.type': resolvedType } }
-    );
-    throw badRequest('Element is already bookmarked.');
-  }
+  if (added.modifiedCount === 0) throw badRequest('Element is already bookmarked.');
 
-  res.status(201).json({
-    message: 'Element bookmarked.',
-    bookmark: { contentid: contentId, type: resolvedType },
-  });
+  res.status(201).json({ message: 'Element bookmarked.', bookmark: { contentid: contentId } });
 };
 
-/** Optional `?type=cast|article` only removes the bookmark if its type matches. */
 exports.removeUserBookmark = async (req, res) => {
   const userId = req.params.id;
   assertObjectId(userId);
-  const contentId = String(req.params.contentId);
-  const rawType = req.query.type || req.query.contentType || req.body.type || req.body.contentType;
-  const type = normalizeContentType(rawType);
-  if (rawType && !type) throw badRequest('Invalid content type.');
   if (!(await User.exists({ _id: userId }))) throw notFound('User not found.');
 
   const result = await User.updateOne(
     { _id: userId },
-    {
-      $pull: {
-        bookmarkedcontent: type ? { contentid: contentId, type } : { contentid: contentId },
-      },
-    }
+    { $pull: { bookmarkedcontent: { contentid: String(req.params.contentId) } } }
   );
   if (result.modifiedCount === 0) throw notFound('Bookmark not found.');
   res.status(200).json({ message: 'Element removed from bookmarks.' });
@@ -700,6 +618,7 @@ const castsInDepartmentOrder = async (departments) => {
   if (departments.length === 0) return [];
   const order = new Map(departments.map((department, index) => [department, index]));
   const casts = await Cast.find({ department: { $in: departments } })
+    .select(CARD_PROJECTION)
     .sort({ _id: 1 })
     .lean();
   // Array.prototype.sort is stable: casts keep _id order within a department.
@@ -722,6 +641,7 @@ exports.getSuggestedForYou = async (req, res) => {
   if (path === 'explorer') {
     const explored = learningService.exploredFields(user.learning);
     const unexplored = await Cast.find({ department: { $nin: explored } })
+      .select(CARD_PROJECTION)
       .sort({ 'rating.value': -1, dateadded: -1, _id: 1 })
       .limit(EXPLORER_SUGGESTION_LIMIT)
       .lean();
@@ -739,6 +659,7 @@ exports.getSuggestedForYou = async (req, res) => {
 
   if (path === 'follower') {
     const newest = await Cast.find({ department: { $in: departments } })
+      .select(CARD_PROJECTION)
       .sort({ dateadded: -1, _id: -1 })
       .lean();
     return res.status(200).json(newest);
