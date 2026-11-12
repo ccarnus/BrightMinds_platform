@@ -30,7 +30,8 @@ npm run check          # lint + format check + tests — run before declaring wo
 | `queues/`              | Bull cast queue, runs `services/ai_pipeline.js` (daily retry: `services/ai_retry.js`)             |
 | `middleware/`          | `auth` (JWT), `upload` (multer), `error_handler`, `rate_limit`                                    |
 | `models/`              | Mongoose schemas                                                                                  |
-| `views/html.js`        | HTML pages (email confirmation, password reset) and email bodies                                  |
+| `views/html.js`        | HTML pages opened from email links (confirmation, password reset)                                 |
+| `views/emails.js`      | Account emails (`{ subject, html, text }`)                                                        |
 | `utils/http.js`        | `HttpError`, `badRequest`, `notFound`, `assertObjectId`, `parseJsonField`, `pick`                 |
 | `lists/departments.js` | Allowed departments ↔ OpenAlex field ids                                                          |
 | `backend/media/`       | Uploaded/generated files (git-ignored), served at `/backend/media/*`                              |
@@ -53,6 +54,13 @@ npm run check          # lint + format check + tests — run before declaring wo
   `services/thumbnail.js` (`createCastThumbnail`: `time` = author's moment, omitted = automatic;
   files `thumb_*.jpg`, which the startup backfill uses to recognise converted casts). The URL is
   not client-editable.
+- **Accounts**: `controllers/auth_controller.js` (signup, login, confirmation, reset). The account is
+  usable before the email is confirmed; a failed email never deletes it. Login errors never reveal
+  whether an email exists, and neither does the reset request (always 200). Emails go through
+  `services/account_email.js` (cooldown/hourly cap, hashed single-use tokens, `waitMs`/`background`)
+  and `services/mailer.js` (`MailError` kinds); passwords/emails are validated in
+  `services/credentials.js`. Rate limiters are separate per endpoint in `middleware/rate_limit.js`.
+  Check mail on the server with `npm run mail -- check`.
 - **Auth**: protect write routes with `authenticate`, per-user routes with `[authenticate, requireSelf('id')]`.
   Enforcement is controlled by `AUTH_REQUIRED` (currently off in production until the app sends tokens).
 - **Topics**: always go through `services/topics.js` (`createTopicIfNotExist`, `removeExistingTopic`,
@@ -109,5 +117,9 @@ npm run check          # lint + format check + tests — run before declaring wo
 - Media URLs stored in MongoDB embed `PUBLIC_BASE_URL`; changing it doesn't rewrite existing documents.
 - `services/topic_indicator_computor.js` skips network calls when `config.isTest`; its unit test
   sets `NODE_ENV=development` and mocks `axios` to exercise them.
+- A lab is a department (the 26 OpenAlex fields): `services/lab_research.js` creates one `VirtualLab` per
+  department and stores `research.works12m` / `research.level` (log scale 0-100 between the quietest and the busiest
+  lab; one OpenAlex `group_by` request). It sizes the labs on the app's map (`GET /virtual/lab/overview`), refreshes at
+  server start when missing or older than a week and every Monday, and is skipped when `config.isTest`.
 - Deployment: home server (`ssh homeboy`, LAN only), service `brightminds` in `/opt/homeboy/compose.yml`
   behind Caddy at `https://api.greenlights.us`; push to `main` then run `/opt/homeboy/deploy.sh`.

@@ -10,13 +10,32 @@ const {
 const { AIError, classifyError } = require('../../services/openai');
 const { getFieldId } = require('../../services/generate_topic');
 const { departments, departmentNames, departmentIdByName } = require('../../lists/departments');
-const { escapeHtml, passwordResetEmail } = require('../../views/html');
+const { escapeHtml } = require('../../views/html');
+const { passwordResetEmail } = require('../../views/emails');
 
 describe('isValidEmail', () => {
-  test.each(['a@b.co', 'first.last@uni.edu'])('accepts %s', (email) => {
-    expect(isValidEmail(email)).toBe(true);
-  });
-  test.each(['a@b', 'a b@c.d', '@b.co', '', null, { $ne: null }])('rejects %p', (email) => {
+  test.each(['a@b.co', 'first.last@uni.edu', 'a+tag@mail.exotec.com', 'me@bücher.de'])(
+    'accepts %s',
+    (email) => {
+      expect(isValidEmail(email)).toBe(true);
+    }
+  );
+  test.each([
+    'a@b',
+    'a b@c.d',
+    '@b.co',
+    '',
+    null,
+    { $ne: null },
+    'a@@b.co',
+    '.a@b.co',
+    'a..b@b.co',
+    'a@b.c',
+    'a@-b.co',
+    'a@b..co',
+    `${'x'.repeat(65)}@b.co`,
+    'a@b.123',
+  ])('rejects %p', (email) => {
     expect(isValidEmail(email)).toBe(false);
   });
 });
@@ -128,8 +147,12 @@ describe('HTML views', () => {
   });
 
   test('user-controlled values are escaped in emails', () => {
-    const html = passwordResetEmail({ username: '<img src=x onerror=alert(1)>', token: 'abc' });
+    const { html, text } = passwordResetEmail({
+      username: '<img src=x onerror=alert(1)>',
+      token: 'abc',
+    });
     expect(html).not.toContain('<img src=x');
     expect(html).toContain('http://api.test/user/reset-password/abc');
+    expect(text).toContain('http://api.test/user/reset-password/abc');
   });
 });

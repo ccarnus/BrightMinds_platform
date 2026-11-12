@@ -1,23 +1,14 @@
-const bcrypt = require('bcrypt');
-const crypto = require('crypto');
 const mongoose = require('mongoose');
 const User = require('../models/user_model');
 const Cast = require('../models/cast_model');
 const { CARD_PROJECTION } = require('../services/cast');
 const { departmentNames } = require('../lists/departments');
-const isValidEmail = require('../services/email_validator');
-const { sendMail } = require('../services/mailer');
+const credentials = require('../services/credentials');
+const { issueEmail } = require('../services/account_email');
 const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
 const rewardsService = require('../services/rewards');
 const learningService = require('../services/learning');
 const { recordCastWatched } = require('../services/learning_activity');
-const { signToken } = require('../middleware/auth');
-const {
-  messagePage,
-  resetPasswordFormPage,
-  verificationEmail,
-  passwordResetEmail,
-} = require('../views/html');
 const {
   HttpError,
   assertObjectId,
@@ -25,14 +16,9 @@ const {
   notFound,
   parseJsonField,
   pick,
-  isNonEmptyString,
   isValidObjectId,
 } = require('../utils/http');
 
-const BCRYPT_ROUNDS = 10;
-const MIN_PASSWORD_LENGTH = 4;
-const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
-const UNIVERSITY_ROLES = ['Professor', 'PhD Student', 'Researcher'];
 // Fields a user may change on their own profile via PUT /user/:id (never `learning` or `rewards`).
 const SELF_EDITABLE_FIELDS = [
   'username',
@@ -46,7 +32,6 @@ const PUBLIC_LIST_FIELDS =
   '_id email username role profilePictureUrl evaluation_list bookmarkedcontent preferences learning.path learning.focusField learning.stats castPublications university isVerified';
 // Explorer suggestions from unexplored fields can span the whole catalog.
 const EXPLORER_SUGGESTION_LIMIT = 50;
-const normalizeEmail = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
 
 const normalizeBoolean = (value) => ['1', 'true', 'yes'].includes(String(value).toLowerCase());
 
@@ -63,125 +48,7 @@ const findUserOr404 = async (id, projection) => {
   return user;
 };
 
-/** HTML endpoints render an error page instead of the JSON error handler output. */
-const htmlRoute = (handler) => async (req, res) => {
-  try {
-    await handler(req, res);
-  } catch (error) {
-    console.error(`Error on ${req.method} ${req.originalUrl}:`, error);
-    res.status(500).send(
-      messagePage({
-        title: 'Server Error',
-        paragraphs: ['Sorry, something went wrong. Please try again later.'],
-        error: true,
-      })
-    );
-  }
-};
-
-// ---------------------------------------------------------------- Account
-
-/** Multipart: `image` file + `user` JSON field. Sends a verification email. */
-exports.signup = async (req, res) => {
-  if (!req.file) throw badRequest('A profile picture is required (field "image").');
-  const data = parseJsonField(req.body, 'user');
-  const email = normalizeEmail(data.email);
-  if (!isValidEmail(email)) throw badRequest('The email domain name is not a valid one.');
-  if (!isNonEmptyString(data.password)) throw badRequest('Password is required.');
-  if (await User.exists({ email })) {
-    throw new HttpError(409, 'An account with this email already exists.');
-  }
-
-  // `objective` is the legacy name of `path`; unknown or retired paths are left for onboarding.
-  const path = learningService.resolvePathKey(data.path ?? data.objective);
-  const focusField =
-    path && learningService.getPath(path).usesFocusField && learningService.isField(data.focusField)
-      ? data.focusField
-      : null;
-  const user = new User({
-    email,
-    password: await bcrypt.hash(data.password, BCRYPT_ROUNDS),
-    username: data.username,
-    role: data.role,
-    profilePictureUrl: mediaUrl(MEDIA_DIRS.profilePictures, req.file.filename),
-    verificationToken: crypto.randomBytes(16).toString('hex'),
-    learning: {
-      version: learningService.LEARNING_VERSION,
-      path,
-      focusField,
-      startedAt: path ? new Date() : undefined,
-    },
-  });
-  if (UNIVERSITY_ROLES.includes(data.role)) {
-    user.university = data.university;
-  }
-  await user.save();
-
-  try {
-    await sendMail({
-      to: email,
-      subject: 'Account Verification - BrightMinds Research',
-      html: verificationEmail(user.verificationToken),
-    });
-  } catch (error) {
-    console.error('Error sending verification email:', error);
-    await User.deleteOne({ _id: user._id });
-    throw new HttpError(500, 'An error occurred during signup. Please try again later.');
-  }
-
-  res
-    .status(201)
-    .json({ response: 'User created. Please check your email to verify your account.' });
-};
-
-exports.confirmation = htmlRoute(async (req, res) => {
-  const user = await User.findOne({ verificationToken: String(req.params.token) });
-  if (!user) {
-    return res.status(400).send(
-      messagePage({
-        title: 'Verification Failed',
-        paragraphs: [
-          'We were unable to find a user for this token.',
-          'Please check the link or contact support.',
-        ],
-        error: true,
-      })
-    );
-  }
-  if (user.isVerified) {
-    return res.status(400).send(
-      messagePage({
-        title: 'Already Verified',
-        paragraphs: ['This user has already been verified.'],
-      })
-    );
-  }
-  user.isVerified = true;
-  await user.save();
-  return res.status(200).send(
-    messagePage({
-      title: 'Verification Successful',
-      heading: 'Verification Successful!',
-      paragraphs: ['Your account has been verified. You can now log in.'],
-    })
-  );
-});
-
-exports.login = async (req, res) => {
-  const email = normalizeEmail(req.body.email);
-  const { password } = req.body;
-  if (!email || typeof password !== 'string') {
-    throw badRequest('Email and password are required.');
-  }
-  const user = await User.findOne({ email });
-  if (!user) {
-    return res.status(401).json({ response: 'user not found.' });
-  }
-  if (!(await bcrypt.compare(password, user.password))) {
-    return res.status(401).json({ response: 'incorrect password' });
-  }
-  return res.status(200).json({ userId: user._id, email: user.email, token: signToken(user._id) });
-};
+// ---------------------------------------------------------------- Account (signup, login and password reset: auth_controller)
 
 exports.getAllUser = async (req, res) => {
   res.status(200).json(await User.find().select(PUBLIC_LIST_FIELDS));
@@ -195,11 +62,25 @@ exports.getOneUser = async (req, res) => {
 exports.updateOneUser = async (req, res) => {
   const user = await findUserOr404(req.params.id);
   const data = parseJsonField(req.body, 'user');
+  let emailChanged = false;
 
   if (data.email !== undefined) {
-    const email = normalizeEmail(data.email);
-    if (!isValidEmail(email)) throw badRequest('Invalid email.');
-    user.email = email;
+    const email = credentials.normalizeEmail(data.email);
+    credentials.assertValid(credentials.emailProblem(email));
+    if (email !== user.email) {
+      const taken = await credentials.findUserByEmail(email, '_id');
+      if (taken && String(taken._id) !== String(user._id)) {
+        throw new HttpError(409, 'An account with this email already exists.');
+      }
+      user.email = email;
+      user.isVerified = false;
+      user.verifiedAt = undefined;
+      // A link sent to the previous address must not confirm the new one.
+      user.verificationToken = undefined;
+      user.verificationExpires = undefined;
+      user.set('mailThrottle.verification', undefined);
+      emailChanged = true;
+    }
   }
   Object.assign(user, pick(data, SELF_EDITABLE_FIELDS));
 
@@ -211,6 +92,8 @@ exports.updateOneUser = async (req, res) => {
   if (req.file) {
     await deleteMediaByUrl(previousPictureUrl, MEDIA_DIRS.profilePictures);
   }
+  // The new address has to be confirmed; meanwhile the account keeps working.
+  if (emailChanged) issueEmail(user, 'verification', { background: true }).catch(() => {});
 
   res.status(200).json({ message: 'User updated successfully.', user });
 };
@@ -221,108 +104,6 @@ exports.deleteOneUser = async (req, res) => {
   await User.deleteOne({ _id: user._id });
   res.status(200).json({ response: 'user removed.' });
 };
-
-// ---------------------------------------------------------------- Password reset
-
-exports.requestPasswordResetEmail = async (req, res) => {
-  const user = await User.findOne({ email: normalizeEmail(req.body.email) });
-  if (!user) throw notFound('No user found with that email address.');
-  if (!user.isVerified) throw badRequest('Your email has not been verified.');
-
-  user.resetPasswordToken = crypto.randomBytes(20).toString('hex');
-  user.resetPasswordExpires = Date.now() + RESET_TOKEN_TTL_MS;
-  await user.save();
-
-  try {
-    await sendMail({
-      to: user.email,
-      subject: 'Password Reset - BrightMinds Research',
-      html: passwordResetEmail({ username: user.username, token: user.resetPasswordToken }),
-    });
-  } catch (error) {
-    console.error('Error sending reset email:', error);
-    throw new HttpError(500, 'Error sending reset email.');
-  }
-  res.status(200).json({ message: 'Password reset link sent to your email.' });
-};
-
-const findUserByResetToken = (token) =>
-  User.findOne({ resetPasswordToken: String(token), resetPasswordExpires: { $gt: Date.now() } });
-
-const invalidResetLinkPage = () =>
-  messagePage({
-    title: 'Invalid or Expired Link',
-    paragraphs: ['The password reset link is invalid or has expired.'],
-    error: true,
-  });
-
-exports.showResetPasswordForm = htmlRoute(async (req, res) => {
-  const user = await findUserByResetToken(req.params.token);
-  if (!user) {
-    return res.status(400).send(invalidResetLinkPage());
-  }
-  return res.status(200).send(resetPasswordFormPage(req.params.token));
-});
-
-exports.resetPassword = htmlRoute(async (req, res) => {
-  const { password, confirmPassword } = req.body;
-  const goBack = { href: 'javascript:history.back()', label: 'Go Back' };
-
-  if (
-    typeof password !== 'string' ||
-    typeof confirmPassword !== 'string' ||
-    !password ||
-    !confirmPassword
-  ) {
-    return res.status(400).send(
-      messagePage({
-        title: 'Invalid Submission',
-        paragraphs: ['Please provide both password fields.'],
-        error: true,
-        button: goBack,
-      })
-    );
-  }
-  if (password !== confirmPassword) {
-    return res.status(400).send(
-      messagePage({
-        title: 'Passwords Do Not Match',
-        paragraphs: ['The passwords you entered do not match. Please try again.'],
-        error: true,
-        button: goBack,
-      })
-    );
-  }
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return res.status(400).send(
-      messagePage({
-        title: 'Password Too Short',
-        paragraphs: [`Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`],
-        error: true,
-        button: goBack,
-      })
-    );
-  }
-
-  const user = await findUserByResetToken(req.params.token);
-  if (!user) {
-    return res.status(400).send(invalidResetLinkPage());
-  }
-  user.password = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  user.resetPasswordToken = undefined;
-  user.resetPasswordExpires = undefined;
-  await user.save();
-
-  return res.status(200).send(
-    messagePage({
-      title: 'Password Updated',
-      heading: 'Password Updated!',
-      paragraphs: [
-        'Your password has been successfully updated. You can now log in with your new password.',
-      ],
-    })
-  );
-});
 
 // ---------------------------------------------------------------- Evaluation list
 

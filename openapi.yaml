@@ -403,8 +403,11 @@ paths:
       summary: Create a user account
       description: |
         Multipart upload of the profile picture plus a `user` form field holding a
-        JSON-encoded `UserSignup` object. Sends a verification email; if sending fails
-        the account is rolled back (500). Rate limited.
+        JSON-encoded `UserSignup` object. The account is created and usable at once (the
+        returned `token` can be used right away); a confirmation email is sent afterwards,
+        and failing to send it never removes the account (`emailSent: false`: the user can
+        ask for it again with `POST /user/{id}/verification/resend`). The password must
+        follow the policy of `UserSignup`. Rate limited.
       requestBody:
         required: true
         content:
@@ -415,7 +418,7 @@ paths:
                 user:
                   type: string
                   description: JSON-encoded `UserSignup` object.
-                  example: '{"email":"jane@university.edu","password":"secret","username":"jane","role":"Researcher","university":"MIT","path":"explorer"}'
+                  example: '{"email":"jane@university.edu","password":"secret123","username":"jane","role":"Researcher","university":"MIT","path":"explorer"}'
                 image:
                   type: string
                   format: binary
@@ -426,11 +429,11 @@ paths:
                 contentType: image/jpeg, image/png
       responses:
         "201":
-          description: User created; verification email sent
+          description: Account created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
+                $ref: "#/components/schemas/SignupResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
@@ -445,18 +448,20 @@ paths:
     get:
       tags: [User]
       summary: Confirm user email
-      description: Opened from the verification email; renders an HTML page.
+      description: |
+        Opened from the confirmation email; renders an HTML page. The link is valid for 72 hours.
+        Opening it again once confirmed shows "already confirmed" (200).
       parameters:
         - $ref: "#/components/parameters/TokenParam"
       responses:
         "200":
-          description: Account verified (HTML page)
+          description: Email confirmed, or already confirmed (HTML page)
           content:
             text/html:
               schema:
                 type: string
         "400":
-          description: Unknown token or account already verified (HTML page)
+          description: Unknown, replaced, malformed or expired link (HTML page)
           content:
             text/html:
               schema:
@@ -471,7 +476,11 @@ paths:
     post:
       tags: [User]
       summary: Login
-      description: "Returns the JWT to send as `Authorization: Bearer <token>`. Rate limited."
+      description: |
+        Returns the JWT to send as `Authorization: Bearer <token>`. Accounts whose email is not
+        confirmed yet can log in (`isVerified: false`). An unknown email and a wrong password
+        give the same 401. Rate limited: failed attempts only count (8 per account and address,
+        60 per address, every 15 minutes).
       requestBody:
         required: true
         content:
@@ -497,23 +506,90 @@ paths:
                     type: string
                   email:
                     type: string
+                  username:
+                    type: string
+                  role:
+                    $ref: "#/components/schemas/Role"
+                  isVerified:
+                    type: boolean
                   token:
                     type: string
                     description: JWT for the `bearerAuth` scheme.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
-          description: Unknown email or incorrect password
+          description: Incorrect email or password
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  error:
+                    type: string
+                    example: Incorrect email or password.
+                  message:
+                    type: string
                   response:
                     type: string
-                    enum: [user not found., incorrect password]
+                    description: Same text, kept for older app versions.
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /user/{id}/verification/resend:
+    post:
+      tags: [User]
+      summary: Resend the confirmation email
+      description: |
+        Sends a new confirmation link (the previous one stops working). Does nothing for an
+        account that is already confirmed. At most one email per minute and 5 per hour for each
+        account (429 with `retryAfterSeconds` and a `Retry-After` header).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Email sent (or the account is already confirmed)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  emailStatus:
+                    type: string
+                    enum: [sent, pending, verified]
+                  isVerified:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          description: Too many emails requested
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+                  retryAfterSeconds:
+                    type: integer
+        "503":
+          description: The email could not be sent right now; try again later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /user:
     get:
       tags: [User]
@@ -637,7 +713,12 @@ paths:
     post:
       tags: [User]
       summary: Request password reset
-      description: Emails a reset link valid for one hour. Rate limited.
+      description: |
+        Emails a reset link (valid for one hour, single use) when an account exists for the
+        email. The answer is always the same 200, whether or not an account exists, so the
+        endpoint cannot be used to discover accounts; unconfirmed accounts can reset too (which
+        confirms their email). At most one email per minute and 5 per hour for each account.
+        Rate limited.
       requestBody:
         required: true
         content:
@@ -651,15 +732,13 @@ paths:
               required: [email]
       responses:
         "200":
-          description: Reset email sent
+          description: Request accepted
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -713,7 +792,7 @@ paths:
               schema:
                 type: string
         "400":
-          description: Missing/mismatched/too short password, or invalid or expired link (HTML page)
+          description: Missing/mismatched/too weak password (the HTML form is shown again with the reason), or invalid, expired or already used link (HTML page)
           content:
             text/html:
               schema:
@@ -1593,6 +1672,23 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/VirtualLab"
+  /virtual/lab/overview:
+    get:
+      tags: [VirtualLab]
+      summary: Research volume and content of every lab
+      description: |
+        One entry per department (the 26 virtual labs, in a fixed order), for the app's lab map.
+        `works12m` is the number of works OpenAlex lists for the field over the last 12 months and
+        `level` (0-100, log scale between the quietest and the busiest lab) is what sizes the lab.
+        Both are `null` until the first refresh, which runs at server start when missing or older
+        than a week, then every Monday.
+      responses:
+        "200":
+          description: Labs overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabOverview"
   /virtual/lab/{id}:
     get:
       tags: [VirtualLab]
@@ -2606,6 +2702,29 @@ components:
         rewards:
           type: object
           description: Raw reward counters; use `GET /user/{id}/rewards` for levels, streak and badges.
+    SignupResponse:
+      type: object
+      properties:
+        response:
+          type: string
+          description: Message to show the user.
+        userId:
+          type: string
+        email:
+          type: string
+        token:
+          type: string
+          description: JWT; the new user can use the app right away, before confirming the email.
+        isVerified:
+          type: boolean
+          example: false
+        emailSent:
+          type: boolean
+          description: False when the confirmation email could not be sent (the user can resend it).
+        emailStatus:
+          type: string
+          enum: [sent, pending, failed]
+          description: "`pending` when the provider is slow; the email is still on its way."
     UserSignup:
       type: object
       description: Content of the `user` multipart field for `POST /user/signup`.
@@ -2613,12 +2732,18 @@ components:
         email:
           type: string
           format: email
-          description: Must be unique (409 otherwise) and have a valid domain.
+          description: Must be unique (409 otherwise, whatever the capital letters) and well formed.
         password:
           type: string
           format: password
+          minLength: 8
+          description: |
+            8 to 72 bytes; not only spaces, not a very common password, not equal to the email
+            or the name.
         username:
           type: string
+          minLength: 2
+          maxLength: 50
         role:
           $ref: "#/components/schemas/Role"
         university:
@@ -2947,6 +3072,48 @@ components:
           type: string
         colorcode:
           type: string
+        research:
+          type: object
+          description: Filled in by the weekly OpenAlex refresh (see `GET /virtual/lab/overview`).
+          properties:
+            works12m:
+              type: integer
+              nullable: true
+            level:
+              type: number
+              nullable: true
+            updatedAt:
+              type: string
+              format: date-time
+              nullable: true
+    LabOverview:
+      type: object
+      properties:
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the research volumes were last refreshed (oldest lab).
+        labs:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Department key, e.g. `ComputerScience`.
+              works12m:
+                type: integer
+                nullable: true
+                description: Works published in the last 12 months (OpenAlex).
+              level:
+                type: number
+                nullable: true
+                description: 0-100, log scale of `works12m`; sizes the lab on the map.
+              casts:
+                type: integer
+              topics:
+                type: integer
     VirtualLabInput:
       type: object
       properties:

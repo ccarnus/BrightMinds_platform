@@ -1,4 +1,8 @@
 const VirtualLab = require('../models/virtual_lab_model');
+const Cast = require('../models/cast_model');
+const Topic = require('../models/topic_model');
+const { departmentNames } = require('../lists/departments');
+const { refreshIfStale } = require('../services/lab_research');
 const { MEDIA_DIRS, mediaUrl, deleteMediaByUrl } = require('../services/media');
 const { assertObjectId, badRequest, notFound, parseJsonField, pick } = require('../utils/http');
 
@@ -34,6 +38,39 @@ exports.createVirtualLab = async (req, res) => {
 
 exports.getAllVirtualLabs = async (req, res) => {
   res.status(200).json(await VirtualLab.find());
+};
+
+/**
+ * Every department with its research volume and its content, in one light response: what the
+ * app's lab map is drawn from. `works12m` / `level` are null until the first OpenAlex refresh.
+ */
+exports.getLabOverview = async (req, res) => {
+  refreshIfStale();
+  const [labs, casts, topics] = await Promise.all([
+    VirtualLab.find({ name: { $in: departmentNames } })
+      .select('name research')
+      .lean(),
+    Cast.aggregate([{ $group: { _id: '$department', count: { $sum: 1 } } }]),
+    Topic.aggregate([{ $group: { _id: '$departmentName', count: { $sum: 1 } } }]),
+  ]);
+  const researchByName = new Map(labs.map((lab) => [lab.name, lab.research || {}]));
+  const castsByName = new Map(casts.map((item) => [item._id, item.count]));
+  const topicsByName = new Map(topics.map((item) => [item._id, item.count]));
+
+  const updatedAt = labs
+    .map((lab) => lab.research?.updatedAt)
+    .filter(Boolean)
+    .sort((a, b) => a - b)[0];
+  res.status(200).json({
+    updatedAt: updatedAt || null,
+    labs: departmentNames.map((name) => ({
+      name,
+      works12m: researchByName.get(name)?.works12m ?? null,
+      level: researchByName.get(name)?.level ?? null,
+      casts: castsByName.get(name) || 0,
+      topics: topicsByName.get(name) || 0,
+    })),
+  });
 };
 
 exports.getOneVirtualLab = async (req, res) => {

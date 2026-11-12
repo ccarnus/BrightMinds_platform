@@ -8,6 +8,8 @@ const { migrateLearningProfiles } = require('./services/learning_migration');
 const { migrateToCastOnly } = require('./services/cast_only_migration');
 const { backfillCastThumbnails } = require('./services/thumbnail_backfill');
 const { castQueue, startCastWorker } = require('./queues/cast_queue');
+const { verifyMail } = require('./services/mailer');
+const { scheduleWeeklyLabResearch, refreshIfStale } = require('./services/lab_research');
 
 const start = async () => {
   config.validate();
@@ -37,7 +39,15 @@ const start = async () => {
   }
 
   startCastWorker();
+  // Not awaited: a mail problem must not delay or stop the API (users can still log in and use the app).
+  verifyMail().then((mail) => {
+    if (mail.ok) console.log('Email: the SMTP account accepted the credentials.');
+    else console.error(`Email is NOT working (${mail.kind}): ${mail.message}`);
+  });
   const impactTask = scheduleWeeklyImpactUpdate();
+  const labResearchTask = scheduleWeeklyLabResearch();
+  // Fills in (or renews) the research volume that sizes the labs; the API works without it.
+  refreshIfStale();
   const retryTask = scheduleDailyAIRetry();
   if (!config.openai.apiKey) {
     console.warn('OPENAI_API_KEY is not set: new casts stay unprocessed until it is.');
@@ -61,6 +71,7 @@ const start = async () => {
     console.log(`${signal} received, shutting down.`);
     server.close();
     impactTask?.stop();
+    labResearchTask?.stop();
     retryTask?.stop();
     await Promise.allSettled([castQueue.close()]);
     await mongoose.disconnect();

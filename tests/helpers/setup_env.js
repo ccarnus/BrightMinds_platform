@@ -4,6 +4,7 @@ const path = require('path');
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-secret';
+process.env.BCRYPT_ROUNDS = '4';
 process.env.PUBLIC_BASE_URL = 'http://api.test';
 process.env.AUTH_REQUIRED = 'false';
 process.env.MEDIA_ROOT = path.join(

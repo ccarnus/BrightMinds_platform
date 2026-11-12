@@ -61,6 +61,17 @@ automatically. `PUT /cast/:id` with `thumbnailTime` re-picks it. At startup, cas
 not a video thumbnail (former AI illustrations) get an automatic thumbnail in the background
 (`services/thumbnail_backfill.js`, idempotent).
 
+## Virtual labs
+
+A lab is a department (the 26 OpenAlex fields in `lists/departments.js`). The size of a lab on the app's map is
+how much research is done in its field, kept on the lab itself: `research.works12m` (works OpenAlex lists for the
+field over the last 12 months) and `research.level` (0-100: log scale between the quietest and the busiest lab).
+`services/lab_research.js` creates the 26 labs and fills `research` with a single OpenAlex `group_by` request, at
+server start when the data is missing or older than a week, then every Monday at 01:00. If OpenAlex cannot be
+reached the previous values stay (a failed refresh is retried at most once an hour, on demand).
+`GET /virtual/lab/overview` returns every lab with `works12m`, `level`, `casts` and `topics` (research values are
+`null` until the first refresh, and the app then draws all labs at the same size).
+
 ## Casts only (articles removed)
 
 The app only shares casts. At startup `services/cast_only_migration.js` (idempotent) cleans the
@@ -74,6 +85,35 @@ collection is dropped (one that still holds documents is left alone, with a warn
 List endpoints (`/cast`, trending, by category / department / author, suggestions, expanded
 bookmarks) return cards: the transcript (`description`), the quiz (`evaluation`) and `processing`
 only come with `GET /cast/:id` (the quiz question with `GET /cast/evaluation/:id`).
+
+## Accounts and email
+
+Signup, login, email confirmation and password reset live in `controllers/auth_controller.js`.
+
+- **Usable at once.** Signup creates the account and returns a `token`: the user is logged in and
+  can use the app while the email is unconfirmed (`isVerified: false`). Login works the same.
+  Sending the confirmation email never fails the signup (`emailSent` / `emailStatus` tell the app;
+  `POST /user/:id/verification/resend` sends it again).
+- **Passwords:** 8 to 72 bytes, not only spaces, not a very common one, not the email or the name
+  (`services/credentials.js`, also used by the reset form). Hashed with bcrypt (`BCRYPT_ROUNDS`, 12).
+- **Login** answers the same 401 for an unknown email and a wrong password. Emails are
+  case-insensitive (accounts saved with capitals before that still log in).
+- **Links:** confirmation links last 72 h, reset links 1 h and work once. Only a SHA-256 of the
+  token is stored (`services/email_tokens.js`; links sent before that change still work). Per
+  account and kind: 1 email per minute and 5 per hour (`services/account_email.js`); the reset
+  request always answers 200 so it cannot reveal which emails have an account. A reset also
+  confirms the email, and a notice email follows every password change.
+- **Changing the email** (`PUT /user/:id`) makes the account unconfirmed again and sends a new link.
+- **Rate limits** (`middleware/rate_limit.js`, per IP): failed logins 8 per account / 60 per IP
+  every 15 min (successful logins are not counted), signups 10 per hour, email requests 10 per 15 min.
+- **Mail delivery** (`services/mailer.js`): Gmail SMTP with `EMAIL_USER` / `EMAIL_PWD` (an app
+  password; spaces in it are ignored). Timeouts, one retry on temporary failures, errors classified
+  (`config` / `transient` / `recipient`). The server logs at startup whether the credentials work.
+  On the server: `docker compose exec brightminds npm run mail -- check` (verify the account, sends
+  nothing) and `npm run mail -- test you@example.com` (sends the three emails as a preview).
+- **Email design:** `views/emails.js` (light, responsive, with a plain-text part); pages opened from
+  the links are in `views/html.js`. The blue header shows the white logo
+  `backend/media/verification_email/BrightMinds_title.png`: that folder is git-ignored and must exist on the server.
 
 ## API
 

@@ -32,10 +32,26 @@ const config = {
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '24h',
     // When false, auth middleware only decodes tokens; it does not reject requests.
     required: process.env.AUTH_REQUIRED === 'true',
+    bcryptRounds: Number(process.env.BCRYPT_ROUNDS) || 12,
   },
   mail: {
-    user: process.env.EMAIL_USER,
-    password: process.env.EMAIL_PWD,
+    user: process.env.EMAIL_USER?.trim(),
+    // Google shows app passwords in groups ("abcd efgh ijkl mnop"): the spaces are not part of it.
+    password: process.env.EMAIL_PWD?.replace(/\s+/g, ''),
+    fromName: process.env.EMAIL_FROM_NAME || 'BrightMinds Research',
+    // Pause between the attempts at sending one email (only temporary failures are retried).
+    retryDelayMs: 750,
+  },
+  // Account emails (verification link, password reset link).
+  account: {
+    // A user can use the app right away, so a verification link stays valid for a few days.
+    verificationTtlMs: 72 * 60 * 60 * 1000,
+    resetTtlMs: 60 * 60 * 1000,
+    // Between two emails of the same kind to the same user, and at most this many per hour.
+    emailCooldownMs: 60 * 1000,
+    emailMaxPerHour: 5,
+    // How long a request waits for the email to be handed to the provider before answering anyway.
+    sendWaitMs: 10000,
   },
   alerts: {
     to: process.env.OPENAI_ALERT_EMAIL_TO || process.env.ALERT_EMAIL_TO,

@@ -7,6 +7,7 @@ const router = express.Router();
 
 router.post('/', authenticate, upload.virtualLabIcon, virtualLabController.createVirtualLab);
 router.get('/', virtualLabController.getAllVirtualLabs);
+router.get('/overview', virtualLabController.getLabOverview);
 router.get('/:id', virtualLabController.getOneVirtualLab);
 router.put('/:id', authenticate, upload.virtualLabIcon, virtualLabController.updateOneVirtualLab);
 router.delete('/:id', authenticate, virtualLabController.deleteOneVirtualLab);

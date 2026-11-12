@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const { PATH_KEYS } = require('../services/learning');
 
+const ROLES = ['College Student', 'Professor', 'Researcher', 'Learning Enthusiast', 'PhD Student'];
+
 const userSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -14,14 +16,32 @@ const userSchema = new mongoose.Schema({
   role: {
     type: String,
     required: true,
-    enum: ['College Student', 'Professor', 'Researcher', 'Learning Enthusiast', 'PhD Student'],
+    enum: ROLES,
   },
   university: { type: String, required: false },
   profilePictureUrl: { type: String, required: true },
   isVerified: { type: Boolean, default: false },
+  verifiedAt: { type: Date, required: false },
+  lastLoginAt: { type: Date, required: false },
+  passwordChangedAt: { type: Date, required: false },
+  // SHA-256 of the emailed link token (accounts created before hashing keep the raw token).
   verificationToken: { type: String, required: false },
+  verificationExpires: { type: Date, required: false },
   resetPasswordToken: { type: String, required: false },
   resetPasswordExpires: { type: Date, required: false },
+  // Last email of each kind sent to this user: bounds how fast links can be requested (services/account_email.js).
+  mailThrottle: {
+    verification: {
+      lastAt: { type: Date, required: false },
+      windowStart: { type: Date, required: false },
+      count: { type: Number, required: false },
+    },
+    reset: {
+      lastAt: { type: Date, required: false },
+      windowStart: { type: Date, required: false },
+      count: { type: Number, required: false },
+    },
+  },
   evaluation_list: [
     {
       contentid: { type: String, required: false },
@@ -122,8 +142,10 @@ const userSchema = new mongoose.Schema({
 const PRIVATE_FIELDS = [
   'password',
   'verificationToken',
+  'verificationExpires',
   'resetPasswordToken',
   'resetPasswordExpires',
+  'mailThrottle',
   '__v',
 ];
 userSchema.set('toJSON', {
@@ -134,4 +156,7 @@ userSchema.set('toJSON', {
   },
 });
 
-module.exports = mongoose.model('User', userSchema);
+const User = mongoose.model('User', userSchema);
+User.ROLES = ROLES;
+
+module.exports = User;
