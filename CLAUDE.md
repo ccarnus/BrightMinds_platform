@@ -3,7 +3,7 @@
 BrightMinds backend: REST API (Express 5, Mongoose 8, Node 22) for the BrightMinds mobile app.
 The only content is **casts** (videos; there are no articles), enriched in the background with OpenAI
 (transcription + subtitles, quiz question, department; see README "AI processing") and classified
-into OpenAlex **topics** whose impact/activity scores are recomputed weekly. Images are never
+into the topics of the research atlas (OpenAlex catalog, scored weekly: trend, phase, hot score). Images are never
 generated: a cast uses a frame of its video.
 
 ## Commands
@@ -65,6 +65,17 @@ npm run check          # lint + format check + tests — run before declaring wo
   Enforcement is controlled by `AUTH_REQUIRED` (currently off in production until the app sends tokens).
 - **Topics**: always go through `services/topics.js` (`createTopicIfNotExist`, `removeExistingTopic`,
   `moveCastTopic`). `Pending Topic` / `Pending Department` are placeholders until a queue job fills them.
+  Catalog topics (`source: 'openalex'`) persist at 0 casts and are never deleted (only `retired`); author topics
+  are deleted with their last cast. Lists must use `Topic.listedFilter()` (casts, `featured`, author) and leave
+  out the heavy fields.
+- **Research atlas**: domain > lab (field) > area (subfield) > topic, kept in the DB by `services/atlas.js`
+  (catalog `atlas_sync.js` → scores `topic_metrics.js` → signals `topic_signals.js`). The maths is pure in
+  `topic_scoring.js` (windows end ≥30 days ago, shrunk growth against the area, trend/phase, hot blend); don't
+  change a threshold without updating its tests. Every OpenAlex call goes through `services/openalex.js` (key,
+  spacing, retries); never call `api.openalex.org` directly. Independent signals (PubMed, arXiv, Wikipedia) are in
+  `signals.js`, weigh 25% of `hot`, and a failing source is skipped, never fatal. Refreshes are all-or-nothing per
+  step. Legacy mirrors `activity` / `impact` (0-100) and `metrics.openalex.worksLast12Months` are read by the app.
+  Operate with `npm run atlas -- status|sync|metrics|signals|all|hot|topic`.
 - **Casts only**: there is a single content type. `evaluation_list` and `bookmarkedcontent` entries hold cast ids
   (`contentid`) with no `type`; cast rules shared by the endpoints live in `services/cast.js`. List endpoints return
   cards (`CARD_PROJECTION`: no `description`, `evaluation`, `processing`): add new list endpoints with the same
@@ -115,8 +126,9 @@ npm run check          # lint + format check + tests — run before declaring wo
 - The app compares the chosen answer to `evaluation.correct` as a string: keep the
   `{ question, responses, correct }` shape with `correct` being one of `responses`.
 - Media URLs stored in MongoDB embed `PUBLIC_BASE_URL`; changing it doesn't rewrite existing documents.
-- `services/topic_indicator_computor.js` skips network calls when `config.isTest`; its unit test
-  sets `NODE_ENV=development` and mocks `axios` to exercise them.
+- Tests that exercise the network clients set `config.isTest = false` and mock `axios`
+  (see `tests/unit/signals.test.js`, `tests/integration/topic_metrics.test.js`); the atlas jobs are skipped in test mode.
+  `OPENALEX_REQUEST_DELAY_MS=0` (set in `tests/helpers/setup_env.js`) removes the request spacing.
 - A lab is a department (the 26 OpenAlex fields): `services/lab_research.js` creates one `VirtualLab` per
   department and stores `research.works12m` / `research.level` (log scale 0-100 between the quietest and the busiest
   lab; one OpenAlex `group_by` request). It sizes the labs on the app's map (`GET /virtual/lab/overview`), refreshes at

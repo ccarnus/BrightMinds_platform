@@ -71,6 +71,33 @@ const config = {
     // Content-related failures (e.g. moderation) tolerated before an item is marked "failed".
     maxAttempts: Number(process.env.AI_MAX_ATTEMPTS) || 5,
   },
+  // OpenAlex is the backbone of the research atlas. A free key (openalex.org/settings/api) lifts the
+  // shared daily budget of keyless clients (one budget per IP address).
+  openalex: {
+    apiKey: process.env.OPENALEX_API_KEY?.trim(),
+    // OR-filters over more than 10 topic ids are limited to one request per second.
+    requestDelayMs:
+      process.env.OPENALEX_REQUEST_DELAY_MS !== undefined
+        ? Number(process.env.OPENALEX_REQUEST_DELAY_MS)
+        : 1100,
+  },
+  // Research atlas: the topic catalog, its scores and the independent signals.
+  atlas: {
+    // Weekly refresh of the scores (cron syntax, server time).
+    refreshCron: process.env.ATLAS_REFRESH_CRON || '0 2 * * 1',
+    // The catalog (names, keywords, hierarchy) changes rarely.
+    catalogMaxAgeMs: 30 * 24 * 60 * 60 * 1000,
+    metricsMaxAgeMs: 7 * 24 * 60 * 60 * 1000,
+    // Windows end on the first of a month at least this many days ago: recent works are still being indexed.
+    lagDays: 30,
+    // Topics per lab that are listed in the app besides the ones with casts.
+    featuredPerLab: 12,
+    // Topics per lab that also get the independent signals (PubMed, arXiv, Wikipedia).
+    trackedPerLab: 15,
+    // Contact sent to the free public APIs (Wikimedia and NCBI ask for one).
+    contact: process.env.ATLAS_CONTACT || process.env.EMAIL_USER?.trim() || 'brightminds-app',
+    ncbiApiKey: process.env.NCBI_API_KEY?.trim(),
+  },
 };
 
 /** Throws if configuration required to boot the server is missing. */

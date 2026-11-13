@@ -48,7 +48,9 @@ describe('fetchWorksByField', () => {
     expect(counts.get(27)).toBe(2161737);
     expect(counts.size).toBe(2);
     const { params } = axios.get.mock.calls[0][1];
-    expect(params.filter).toBe('from_publication_date:2025-11-12,to_publication_date:2026-11-12');
+    expect(params.filter).toBe(
+      'type:article|review,from_publication_date:2025-11-12,to_publication_date:2026-11-12'
+    );
     expect(params.group_by).toBe('primary_topic.field.id');
   });
 });
@@ -110,6 +112,8 @@ describe('GET /virtual/lab/overview', () => {
       level: null,
       casts: 0,
       topics: 0,
+      catalog: 0,
+      hot: 0,
     });
   });
 
@@ -133,6 +137,8 @@ describe('GET /virtual/lab/overview', () => {
       level: 100,
       casts: 2,
       topics: 1,
+      catalog: 1,
+      hot: 0,
     });
     expect(res.body.labs.find((lab) => lab.name === 'Dentistry').level).toBe(0);
     expect(res.body.labs.find((lab) => lab.name === 'Veterinary').level).toBeGreaterThan(0);

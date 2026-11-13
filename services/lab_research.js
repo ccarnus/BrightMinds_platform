@@ -1,13 +1,12 @@
 // Research volume of each virtual lab (= department = OpenAlex "field"). It sizes the labs on the
-// app's map. One OpenAlex request counts the works published in the last 12 months for all fields.
-const axios = require('axios');
+// app's map. One OpenAlex request counts the articles and reviews published in the last 12 months
+// for all fields.
 const cron = require('node-cron');
 const VirtualLab = require('../models/virtual_lab_model');
 const config = require('../config');
+const openalex = require('./openalex');
 const { departments } = require('../lists/departments');
 
-const OPENALEX_WORKS_URL = 'https://api.openalex.org/works';
-const HTTP_TIMEOUT_MS = 30000;
 const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 // A failed refresh is not retried by incoming requests for this long.
 const RETRY_AFTER_MS = 60 * 60 * 1000;
@@ -19,13 +18,14 @@ const formatDate = (date) => date.toISOString().slice(0, 10);
 const fetchWorksByField = async (now = new Date()) => {
   const start = new Date(now);
   start.setUTCFullYear(now.getUTCFullYear() - 1);
-  const { data } = await axios.get(OPENALEX_WORKS_URL, {
-    timeout: HTTP_TIMEOUT_MS,
-    params: {
-      filter: `from_publication_date:${formatDate(start)},to_publication_date:${formatDate(now)}`,
-      group_by: 'primary_topic.field.id',
-      per_page: 200,
-    },
+  const data = await openalex.get('/works', {
+    filter: [
+      `type:${openalex.WORK_TYPES}`,
+      `from_publication_date:${formatDate(start)}`,
+      `to_publication_date:${formatDate(now)}`,
+    ].join(','),
+    group_by: 'primary_topic.field.id',
+    per_page: 200,
   });
   const counts = new Map();
   for (const group of data?.group_by || []) {

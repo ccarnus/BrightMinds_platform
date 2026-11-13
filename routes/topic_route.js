@@ -7,6 +7,7 @@ const router = express.Router();
 router.post('/', authenticate, topicController.createTopic);
 router.get('/', topicController.getAllTopics);
 router.get('/department/:departmentName', topicController.getTopicsByDepartment);
+router.get('/:id/progress', topicController.getTopicProgress);
 router.get('/:id', topicController.getOneTopic);
 router.put('/:id', authenticate, topicController.updateTopic);
 

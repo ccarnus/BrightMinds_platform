@@ -12,6 +12,7 @@
     "dev": "node --watch server.js",
     "ai": "node scripts/ai.js",
     "mail": "node scripts/mail.js",
+    "atlas": "node scripts/atlas.js",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "lint": "eslint .",

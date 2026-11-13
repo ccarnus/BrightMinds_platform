@@ -3,6 +3,7 @@ const fs = require('fs');
 const bcrypt = require('bcrypt');
 const User = require('../../models/user_model');
 const Cast = require('../../models/cast_model');
+const Topic = require('../../models/topic_model');
 const { signToken } = require('../../middleware/auth');
 const { MEDIA_DIRS, ensureMediaDir, mediaFilePath, mediaUrl } = require('../../services/media');
 
@@ -43,6 +44,17 @@ const createCast = (overrides = {}) =>
     ...overrides,
   });
 
+/** A topic of the catalog (source openalex), by default in Chemistry, area 1. */
+const createCatalogTopic = (overrides = {}) =>
+  Topic.create({
+    name: `Topic ${unique()}`,
+    departmentName: 'Chemistry',
+    source: 'openalex',
+    openalexID: `T${unique()}`,
+    subfield: { id: 1, name: 'Area' },
+    ...overrides,
+  });
+
 /** Writes a file in a media directory and returns its public URL. */
 const createMediaFile = (dir, filename, content = 'data') => {
   ensureMediaDir(dir);
@@ -59,6 +71,7 @@ module.exports = {
   MEDIA_DIRS,
   createUser,
   createCast,
+  createCatalogTopic,
   createMediaFile,
   mediaFileExists,
   authHeader,

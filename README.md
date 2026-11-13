@@ -36,7 +36,7 @@ With docker compose, `MONGODB_URI` is set by the stack (bundled MongoDB); use
 ## AI processing
 
 New casts are enriched in the background (`services/ai_pipeline.js`): transcript + subtitles,
-quiz question + department (one structured call), OpenAlex topic. Each step is saved as soon as
+quiz question + department (one structured call), topic (from the atlas catalog). Each step is saved as soon as
 it succeeds and skipped when its output exists, so retries resume where they stopped. **No image
 is ever generated** (see "Images" below).
 
@@ -69,8 +69,48 @@ field over the last 12 months) and `research.level` (0-100: log scale between th
 `services/lab_research.js` creates the 26 labs and fills `research` with a single OpenAlex `group_by` request, at
 server start when the data is missing or older than a week, then every Monday at 01:00. If OpenAlex cannot be
 reached the previous values stay (a failed refresh is retried at most once an hour, on demand).
-`GET /virtual/lab/overview` returns every lab with `works12m`, `level`, `casts` and `topics` (research values are
+`GET /virtual/lab/overview` returns every lab with `works12m`, `level`, `casts`, `topics`, `catalog` and `hot` (research values are
 `null` until the first refresh, and the app then draws all labs at the same size).
+
+## Research atlas (topics and scores)
+
+Topics are the research subjects users can follow: which ones are hot, and how far along each is. They live in
+layers (`models/topic_model.js`, `lists/departments.js`):
+
+```
+domain (4)  >  lab = OpenAlex field (26)  >  area = OpenAlex subfield (~250)  >  topic (~4,500)
+```
+
+- **Catalog.** OpenAlex's topic taxonomy is the backbone: it covers every discipline, is open (CC0) and has a stable
+  id per topic. `services/atlas_sync.js` downloads all topics (about 25 requests) and keeps each one as a Topic
+  document (`source: 'openalex'`) whether or not a cast uses it; casts are classified into it in two short steps,
+  area then topic (`services/generate_topic.js`). Topics typed by an author stay (`source: 'author'`) and disappear with
+  their last cast. A topic that leaves OpenAlex is `retired`, never deleted while casts use it.
+- **Cross-references.** Each topic carries `ids` (Wikipedia title, Wikidata item, MeSH descriptor), its keywords and
+  its area, so the same subject can be asked of other platforms. A Wikipedia link is trusted (`anchor: 'match'`)
+  only when it is really about the topic.
+- **Score** (`services/topic_scoring.js`, `services/topic_metrics.js`). Works (articles and reviews) are counted in
+  three rolling 12-month windows ending at least 30 days ago, so late-indexed works do not look like a drop.
+  Growth is compared with the topic's own area (median trend of its solid topics), shrunk with a Gamma-Poisson
+  empirical-Bayes posterior so that small topics are not over-read, and kept with a credible interval.
+  - `trend`: `surging` / `rising` (the lower bound beats the area), `steady`, `cooling` (the upper bound is under
+    it) or `niche` (too few works to tell). `phase`: `emerging`, `growing`, `mature`, `declining`.
+  - `hot` (0-100 within the lab) blends growth (45%), acceleration (20%), impact = share of top-10% cited works
+    (20%) and volume (15%); topics too small to rank have `hot: null`.
+  - `featured`: the hottest topics of each lab are listed in the app even without casts.
+- **Independent signals** (`services/signals.js`, `services/topic_signals.js`) for the tracked topics (the top 15 of
+  each lab and those with casts): PubMed (by MeSH descriptor), arXiv (for the labs it covers) and Wikipedia page
+  views. They only count for 25% of `hot`, so one source cannot make a topic hot. Semantic Scholar (non-commercial
+  licence) and Crossref (no topic data) are not used.
+- **Refresh.** `services/atlas.js`: at server start when the data is older than a week, then every Monday at 02:00
+  (`ATLAS_REFRESH_CRON`), in the background; a failure keeps the previous scores and is retried at most once an hour.
+  The first run takes about 7 minutes. **Set `OPENALEX_API_KEY`** (free, openalex.org/settings/api): without a key
+  OpenAlex shares a small daily budget per IP.
+- **Endpoints:** `GET /atlas` (domains and labs), `/atlas/hot`, `/atlas/lab/:name`, `/atlas/topics` (search, filters,
+  paging), `/atlas/status`, `GET /topic/:id/progress` (trend, yearly output, signals). `GET /topic` and
+  `/topic/department/:name` keep their shape and list the topics with casts, the featured ones and the author's.
+- **Commands** (on the server: `docker compose exec brightminds npm run atlas -- <command>`): `status` ·
+  `sync` · `metrics` · `signals` · `all` · `hot [lab]` · `topic <text>`.
 
 ## Casts only (articles removed)
 

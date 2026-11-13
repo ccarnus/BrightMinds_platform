@@ -35,6 +35,7 @@ tags:
   - name: University
   - name: VirtualLab
   - name: Topic
+  - name: Atlas
 
 paths:
   /health:
@@ -1681,7 +1682,8 @@ paths:
         `works12m` is the number of works OpenAlex lists for the field over the last 12 months and
         `level` (0-100, log scale between the quietest and the busiest lab) is what sizes the lab.
         Both are `null` until the first refresh, which runs at server start when missing or older
-        than a week, then every Monday.
+        than a week, then every Monday. `catalog` is the number of topics the atlas knows in the lab
+        and `hot` how many of them are rising or surging (see `GET /atlas`).
       responses:
         "200":
           description: Labs overview
@@ -1998,6 +2000,10 @@ paths:
     get:
       tags: [Topic]
       summary: List topics
+      description: |
+        The topics shown in the app: those with casts, the hottest ones of each lab (`featured`) and
+        the ones an author typed, hottest first. The whole catalog is browsed with `GET /atlas/topics`.
+        Lists leave out the heavy fields (`keywords`, `series`, `signals`, `description`); `GET /topic/{id}` has them.
       responses:
         "200":
           description: Topics
@@ -2011,6 +2017,7 @@ paths:
     get:
       tags: [Topic]
       summary: Get topics by department
+      description: Same selection and order as `GET /topic`, for one lab.
       parameters:
         - name: departmentName
           in: path
@@ -2026,6 +2033,28 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Topic"
+  /topic/{id}/progress:
+    get:
+      tags: [Topic]
+      summary: How a topic is doing
+      description: |
+        Trend, phase and growth of the topic against its area, its output year by year and the
+        independent signals (PubMed, arXiv, Wikipedia). The yearly series is fetched from OpenAlex on
+        first use and then weekly; if OpenAlex cannot be reached the last known series is returned
+        (empty at first). `ranked` is false for topics too small to rank (`hot` is then `null`).
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Topic progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopicProgress"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /topic/{id}:
     get:
       tags: [Topic]
@@ -2070,6 +2099,169 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  # ------------------------------------------------------------------ Atlas
+  /atlas:
+    get:
+      tags: [Atlas]
+      summary: The research atlas
+      description: |
+        The four domains and their 26 labs, with how many topics each lab has, how many are moving
+        (rising or surging) and how many casts they hold. Hierarchy of the atlas: domain > lab (OpenAlex
+        field) > area (OpenAlex subfield) > topic. `windowsEndOn` is the end of the 12-month windows the
+        scores are computed on.
+      responses:
+        "200":
+          description: Domains and labs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AtlasOverview"
+  /atlas/status:
+    get:
+      tags: [Atlas]
+      summary: When the atlas was last refreshed
+      responses:
+        "200":
+          description: Atlas status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AtlasStatus"
+  /atlas/hot:
+    get:
+      tags: [Atlas]
+      summary: Hot topics
+      description: |
+        Topics whose research output grows faster than their area's, with statistical confidence
+        (`trend` is `rising` or `surging`), hottest first. `trend=any` also lists steady, cooling and
+        niche topics.
+      parameters:
+        - name: lab
+          in: query
+          schema:
+            $ref: "#/components/schemas/Department"
+        - name: area
+          in: query
+          description: OpenAlex subfield id (the `areaId` of a topic card).
+          schema:
+            type: integer
+        - name: trend
+          in: query
+          schema:
+            type: string
+            enum: [any]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: Hot topics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  topics:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TopicCard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /atlas/topics:
+    get:
+      tags: [Atlas]
+      summary: Browse and search the topics
+      description: |
+        All the topics of the catalog (not only the listed ones). Every word of `q` must appear in the
+        name, a keyword or the area of the topic.
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: lab
+          in: query
+          schema:
+            $ref: "#/components/schemas/Department"
+        - name: area
+          in: query
+          description: OpenAlex subfield id.
+          schema:
+            type: integer
+        - name: trend
+          in: query
+          schema:
+            type: string
+            enum: [surging, rising, steady, cooling, niche]
+        - name: phase
+          in: query
+          schema:
+            type: string
+            enum: [emerging, growing, mature, declining]
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [hot, growth, volume, casts, name]
+            default: hot
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        "200":
+          description: A page of topics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  topics:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TopicCard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /atlas/lab/{name}:
+    get:
+      tags: [Atlas]
+      summary: A lab of the atlas
+      description: The areas of the lab, its hot topics and the ones that are just emerging.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/Department"
+      responses:
+        "200":
+          description: Lab page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabAtlas"
+        "400":
+          $ref: "#/components/responses/BadRequest"
 
 components:
   securitySchemes:
@@ -3114,6 +3306,13 @@ components:
                 type: integer
               topics:
                 type: integer
+                description: Topics listed in the app for the lab (with casts, the hottest, author-made).
+              catalog:
+                type: integer
+                description: Topics the research atlas knows in the lab.
+              hot:
+                type: integer
+                description: Topics of the lab that are rising or surging.
     VirtualLabInput:
       type: object
       properties:
@@ -3218,10 +3417,71 @@ components:
             type: string
         openalexID:
           type: string
+        source:
+          type: string
+          enum: [openalex, author]
+          description: |
+            `openalex` topics belong to the catalog (they exist with or without casts); `author` topics
+            were typed by an author and disappear with their last cast.
+        originalName:
+          type: string
+          description: The name OpenAlex gives the topic.
+        description:
+          type: string
+        subfield:
+          type: object
+          description: The area of the topic (OpenAlex subfield).
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+        keywords:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              score:
+                type: number
+        ids:
+          type: object
+          description: Identifiers of the same topic on other platforms, to cross-reference them.
+          properties:
+            wikipedia:
+              type: string
+              nullable: true
+              description: English Wikipedia page title.
+            wikidata:
+              type: string
+              nullable: true
+              description: Wikidata item, e.g. `Q12204`. Filled in for the tracked topics.
+            mesh:
+              type: string
+              nullable: true
+              description: MeSH descriptor id (PubMed). An empty string means none was found.
+            meshLabel:
+              type: string
+              nullable: true
+        anchor:
+          type: string
+          enum: [match, loose, shared]
+          description: Whether the Wikipedia page really is about this topic (only `match` feeds the attention signal).
+        retired:
+          type: boolean
+          description: The topic left the OpenAlex catalog. It stays while casts use it.
+        featured:
+          type: boolean
+          description: One of the hottest topics of its lab, listed in the app even without casts.
         activity:
           type: number
+          description: 0-100, how much is published on the topic compared to the other topics of its lab.
         impact:
           type: number
+          description: 0-100, how much of the topic's output is highly cited compared to the other topics of its lab.
         metrics:
           type: object
           properties:
@@ -3234,37 +3494,406 @@ components:
                   type: number
                 worksLast12Months:
                   type: number
+                  description: Works in the latest 12-month window (the same as `score.works12m`).
                 lastFetchedAt:
                   type: string
                   format: date-time
                   nullable: true
-                lastWorksFetchedAt:
-                  type: string
-                  format: date-time
-                  nullable: true
-            wikipedia:
+        score:
+          type: object
+          description: |
+            Computed by the weekly atlas refresh from rolling 12-month windows of OpenAlex works
+            (articles and reviews), the latest one ending at least 30 days ago. Counts of 0 and
+            `null` mean the topic was not scored yet.
+          properties:
+            hot:
+              type: number
+              nullable: true
+              description: 0-100 among the ranked topics of the lab; `null` for topics too small to rank.
+            hotBase:
+              type: number
+              nullable: true
+              description: The hot score before the independent signals are blended in.
+            trend:
+              type: string
+              nullable: true
+              enum: [surging, rising, steady, cooling, niche]
+              description: |
+                Growth against the topic's area, with confidence. `surging` and `rising`: the
+                lower bound of the credible interval is above the area's trend; `cooling`: the upper
+                bound is below it; `niche`: too few works to tell.
+            phase:
+              type: string
+              nullable: true
+              enum: [emerging, growing, mature, declining]
+            works12m:
+              type: integer
+            windows:
+              type: object
+              description: Works in the latest window (`c0`), the one before (`c1`) and the one before that (`c2`); `top` is the number of top-10% cited works in the matured window.
+              properties:
+                c0:
+                  type: integer
+                c1:
+                  type: integer
+                c2:
+                  type: integer
+                top:
+                  type: integer
+            yoy:
+              type: number
+              nullable: true
+              description: Raw change of `c0` over `c1` (0.2 = +20%).
+            growth:
+              type: object
+              description: Shrunk growth against the area (1 = like the area), its credible interval and the expected count.
+              properties:
+                rate:
+                  type: number
+                lower:
+                  type: number
+                upper:
+                  type: number
+                expected:
+                  type: number
+            acceleration:
+              type: number
+              nullable: true
+              description: Whether growth itself is speeding up (positive) or slowing down.
+            impact:
               type: object
               properties:
-                title:
-                  type: string
-                  nullable: true
-                views12Months:
+                share:
                   type: number
-                lastFetchedAt:
-                  type: string
-                  format: date-time
-                  nullable: true
-            lastComputedAt:
+                  description: Share of the topic's works that are in the top 10% most cited of their year.
+                lower:
+                  type: number
+                level:
+                  type: number
+            levels:
+              type: object
+              description: 0-100 percentiles within the lab.
+              properties:
+                growth:
+                  type: number
+                acceleration:
+                  type: number
+                impact:
+                  type: number
+                volume:
+                  type: number
+            signalLevel:
+              type: number
+              nullable: true
+              description: 0-100, from the independent signals; `null` without any.
+            endsOn:
+              type: string
+              nullable: true
+              description: End of the latest window (`YYYY-MM-DD`).
+            computedAt:
               type: string
               format: date-time
               nullable: true
-            lastError:
-              type: string
-              nullable: true
-            backoffUntil:
+        signals:
+          type: object
+          description: Independent cross-checks for the tracked topics.
+          properties:
+            wikipedia:
+              $ref: "#/components/schemas/TopicSignal"
+            pubmed:
+              $ref: "#/components/schemas/TopicSignal"
+            arxiv:
+              $ref: "#/components/schemas/TopicSignal"
+            computedAt:
               type: string
               format: date-time
               nullable: true
+        series:
+          type: object
+          properties:
+            yearly:
+              type: array
+              items:
+                type: object
+                properties:
+                  year:
+                    type: integer
+                  works:
+                    type: integer
+            fetchedAt:
+              type: string
+              format: date-time
+              nullable: true
+    TopicSignal:
+      type: object
+      description: Works (PubMed, arXiv) or page views (Wikipedia) in the latest window and the one before.
+      properties:
+        current:
+          type: number
+        previous:
+          type: number
+        ratio:
+          type: number
+          description: Smoothed ratio `current / previous`.
+        level:
+          type: number
+          description: 0-100 among the tracked topics of the lab.
+        query:
+          type: string
+        fetchedAt:
+          type: string
+          format: date-time
+    TopicCard:
+      type: object
+      description: A topic as a list item.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        lab:
+          $ref: "#/components/schemas/Department"
+        area:
+          type: string
+          nullable: true
+        areaId:
+          type: integer
+          nullable: true
+        hot:
+          type: number
+          nullable: true
+        trend:
+          type: string
+          nullable: true
+          enum: [surging, rising, steady, cooling, niche]
+        phase:
+          type: string
+          nullable: true
+          enum: [emerging, growing, mature, declining]
+        works12m:
+          type: integer
+        change:
+          type: number
+          nullable: true
+          description: Change over the previous 12 months (0.2 = +20%).
+        versusArea:
+          type: number
+          nullable: true
+          description: Growth against the topic's area (1 = like the area).
+        acceleration:
+          type: number
+          nullable: true
+        castCount:
+          type: integer
+        keywords:
+          type: array
+          description: The first three keywords.
+          items:
+            type: string
+    TopicProgress:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        lab:
+          $ref: "#/components/schemas/Department"
+        area:
+          type: string
+          nullable: true
+        scored:
+          type: boolean
+        ranked:
+          type: boolean
+        trend:
+          type: string
+          nullable: true
+          enum: [surging, rising, steady, cooling, niche]
+        phase:
+          type: string
+          nullable: true
+          enum: [emerging, growing, mature, declining]
+        hot:
+          type: number
+          nullable: true
+        works12m:
+          type: integer
+        previous12m:
+          type: integer
+          nullable: true
+        change:
+          type: number
+          nullable: true
+        versusArea:
+          type: number
+          nullable: true
+        versusAreaRange:
+          type: array
+          nullable: true
+          description: Credible interval of `versusArea`, `[lower, upper]`.
+          items:
+            type: number
+        acceleration:
+          type: number
+          nullable: true
+        topCitedShare:
+          type: number
+          nullable: true
+          description: Share of the works in the top 10% most cited.
+        levels:
+          type: object
+          description: 0-100 percentiles within the lab.
+          properties:
+            volume:
+              type: number
+              nullable: true
+            impact:
+              type: number
+              nullable: true
+            attention:
+              type: number
+              nullable: true
+              description: From Wikipedia page views.
+        yearly:
+          type: array
+          items:
+            type: object
+            properties:
+              year:
+                type: integer
+              works:
+                type: integer
+              partial:
+                type: boolean
+                description: The year is not over, so `works` is still growing.
+        signals:
+          type: array
+          items:
+            type: object
+            properties:
+              source:
+                type: string
+                enum: [pubmed, arxiv, wikipedia]
+              current:
+                type: number
+              previous:
+                type: number
+              ratio:
+                type: number
+        windowsEndOn:
+          type: string
+          nullable: true
+        computedAt:
+          type: string
+          format: date-time
+          nullable: true
+    AtlasOverview:
+      type: object
+      properties:
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        windowsEndOn:
+          type: string
+          nullable: true
+        domains:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              labs:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      $ref: "#/components/schemas/Department"
+                    topics:
+                      type: integer
+                    hot:
+                      type: integer
+                    casts:
+                      type: integer
+    LabAtlas:
+      type: object
+      properties:
+        lab:
+          $ref: "#/components/schemas/Department"
+        domain:
+          type: string
+        topics:
+          type: integer
+        areas:
+          type: array
+          description: Most moving areas first.
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              topics:
+                type: integer
+              works12m:
+                type: integer
+              hot:
+                type: integer
+        hot:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopicCard"
+        emerging:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopicCard"
+    AtlasStatus:
+      type: object
+      properties:
+        catalogSyncedAt:
+          type: string
+          format: date-time
+          nullable: true
+        metricsAt:
+          type: string
+          format: date-time
+          nullable: true
+        signalsAt:
+          type: string
+          format: date-time
+          nullable: true
+        windowsEndOn:
+          type: string
+          nullable: true
+        lastError:
+          type: string
+          nullable: true
+        lastErrorAt:
+          type: string
+          format: date-time
+          nullable: true
+        topics:
+          type: object
+          properties:
+            catalog:
+              type: integer
+            scored:
+              type: integer
+            featured:
+              type: integer
+            withCasts:
+              type: integer
+            authored:
+              type: integer
+        openalexKey:
+          type: boolean
+          description: Whether an OpenAlex API key is configured (a free key gives a bigger daily budget).
     TopicResult:
       type: object
       properties:

@@ -51,11 +51,35 @@ exports.getLabOverview = async (req, res) => {
       .select('name research')
       .lean(),
     Cast.aggregate([{ $group: { _id: '$department', count: { $sum: 1 } } }]),
-    Topic.aggregate([{ $group: { _id: '$departmentName', count: { $sum: 1 } } }]),
+    Topic.aggregate([
+      {
+        $group: {
+          _id: '$departmentName',
+          // The topics the lab screen lists (the ones with casts, the hottest, the author-made ones).
+          topics: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $ne: ['$source', 'openalex'] },
+                    { $gt: ['$castCount', 0] },
+                    { $eq: ['$featured', true] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+          catalog: { $sum: { $cond: [{ $ne: ['$retired', true] }, 1, 0] } },
+          hot: { $sum: { $cond: [{ $in: ['$score.trend', ['surging', 'rising']] }, 1, 0] } },
+        },
+      },
+    ]),
   ]);
   const researchByName = new Map(labs.map((lab) => [lab.name, lab.research || {}]));
   const castsByName = new Map(casts.map((item) => [item._id, item.count]));
-  const topicsByName = new Map(topics.map((item) => [item._id, item.count]));
+  const topicsByName = new Map(topics.map((item) => [item._id, item]));
 
   const updatedAt = labs
     .map((lab) => lab.research?.updatedAt)
@@ -68,7 +92,10 @@ exports.getLabOverview = async (req, res) => {
       works12m: researchByName.get(name)?.works12m ?? null,
       level: researchByName.get(name)?.level ?? null,
       casts: castsByName.get(name) || 0,
-      topics: topicsByName.get(name) || 0,
+      topics: topicsByName.get(name)?.topics || 0,
+      // Everything the atlas knows of the lab, and how many of its topics are surging or rising.
+      catalog: topicsByName.get(name)?.catalog || 0,
+      hot: topicsByName.get(name)?.hot || 0,
     })),
   });
 };

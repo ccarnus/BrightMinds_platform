@@ -2,7 +2,6 @@
 const mongoose = require('mongoose');
 const config = require('./config');
 const app = require('./app');
-const { scheduleWeeklyImpactUpdate } = require('./services/topic_indicator_computor');
 const { scheduleDailyAIRetry } = require('./services/ai_retry');
 const { migrateLearningProfiles } = require('./services/learning_migration');
 const { migrateToCastOnly } = require('./services/cast_only_migration');
@@ -10,6 +9,8 @@ const { backfillCastThumbnails } = require('./services/thumbnail_backfill');
 const { castQueue, startCastWorker } = require('./queues/cast_queue');
 const { verifyMail } = require('./services/mailer');
 const { scheduleWeeklyLabResearch, refreshIfStale } = require('./services/lab_research');
+const { migrateLegacyTopics } = require('./services/atlas_sync');
+const { scheduleWeeklyAtlas, refreshIfStale: refreshAtlasIfStale } = require('./services/atlas');
 
 const start = async () => {
   config.validate();
@@ -38,16 +39,28 @@ const start = async () => {
     console.error('Article data cleanup failed:', error);
   }
 
+  // Topics created before the research atlas get their origin (catalog or author).
+  try {
+    const topics = await migrateLegacyTopics();
+    if (topics.catalog || topics.authored || topics.detached) {
+      console.log('Topics migrated:', JSON.stringify(topics));
+    }
+  } catch (error) {
+    console.error('Topic migration failed:', error);
+  }
+
   startCastWorker();
   // Not awaited: a mail problem must not delay or stop the API (users can still log in and use the app).
   verifyMail().then((mail) => {
     if (mail.ok) console.log('Email: the SMTP account accepted the credentials.');
     else console.error(`Email is NOT working (${mail.kind}): ${mail.message}`);
   });
-  const impactTask = scheduleWeeklyImpactUpdate();
+  const atlasTask = scheduleWeeklyAtlas();
   const labResearchTask = scheduleWeeklyLabResearch();
   // Fills in (or renews) the research volume that sizes the labs; the API works without it.
   refreshIfStale();
+  // Syncs the topic catalog and scores it, in the background, when missing or older than a week.
+  refreshAtlasIfStale();
   const retryTask = scheduleDailyAIRetry();
   if (!config.openai.apiKey) {
     console.warn('OPENAI_API_KEY is not set: new casts stay unprocessed until it is.');
@@ -70,7 +83,7 @@ const start = async () => {
   const shutdown = async (signal) => {
     console.log(`${signal} received, shutting down.`);
     server.close();
-    impactTask?.stop();
+    atlasTask?.stop();
     labResearchTask?.stop();
     retryTask?.stop();
     await Promise.allSettled([castQueue.close()]);
